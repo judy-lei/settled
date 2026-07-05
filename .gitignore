@@ -1,0 +1,24 @@
+# Financial data — NEVER commit raw statements or the database
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+CLAUDE.local.md
+notes/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# OS
+.DS_Store
