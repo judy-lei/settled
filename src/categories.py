@@ -135,38 +135,16 @@ def categorize(merchant_normalized: str, rules: list, source_category: str = Non
     `source_category` should already be mapped to our taxonomy by the caller
     (parsers.py) before being passed in here, or None if unavailable.
 
-    include_in_household is NOT a household/personal judgment at this stage —
-    it only distinguishes real spend from non-spend (payments/transfers between
-    your own accounts). Every category, including ones that are always personal
-    (e.g. Rental Property), defaults to included here; shared-vs-personal is
-    decided later via split rules.
-
-    Returns dict: category, category_source, include_in_household
+    Returns dict: category (name string), category_source
     """
     if transaction_type == "payment":
-        return {
-            "category": "Payment",
-            "category_source": "transaction_type",
-            "include_in_household": False,
-        }
+        return {"category": "Payment", "category_source": "transaction_type"}
 
     category = apply_merchant_rule(merchant_normalized, rules)
     if category:
-        return {
-            "category": category,
-            "category_source": "merchant_rule",
-            "include_in_household": True,
-        }
+        return {"category": category, "category_source": "merchant_rule"}
 
     if source_category:
-        return {
-            "category": source_category,
-            "category_source": "source_mapped",
-            "include_in_household": True,
-        }
+        return {"category": source_category, "category_source": "source_mapped"}
 
-    return {
-        "category": "Uncategorized",
-        "category_source": "none",
-        "include_in_household": True,
-    }
+    return {"category": "Uncategorized", "category_source": "none"}

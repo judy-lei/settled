@@ -5,35 +5,27 @@ resolve suspected duplicates (side-by-side compare).
 Run: .venv/bin/streamlit run src/app.py
 """
 
+import html
 import streamlit as st
-from schema import get_conn, add_merchant_rule
+from schema import get_conn, add_merchant_rule, seed_category_splits
 
 st.set_page_config(page_title="Household Spend Review", layout="centered")
-
-# Generic starter set for a fresh database. The dropdown is driven by the
-# categories already in the user's data; this list only seeds an empty one.
-_STARTER_CATEGORIES = [
-    "Groceries", "Eating Out", "Shopping", "Travel", "Health",
-    "Transport", "Home", "Entertainment", "Subscriptions", "Bills",
-]
 
 _ADD_NEW = "+ Add new category…"
 
 
-def get_categories(conn):
-    """User's own categories (from transactions + rules) + any added this
-    session + the generic starter set. 'Uncategorized' and 'Payment' are
-    system values, not offerable categories."""
+def get_categories(conn) -> list[str]:
+    """All categories from the categories table, excluding system values
+    not offered as review choices. Merges in names added this session
+    before they're committed to the DB."""
     if "custom_categories" not in st.session_state:
         st.session_state["custom_categories"] = []
     db_cats = [r[0] for r in conn.execute("""
-        SELECT DISTINCT category FROM transactions
-        WHERE category IS NOT NULL AND category NOT IN ('Uncategorized', 'Payment')
-        UNION
-        SELECT DISTINCT category FROM merchant_rules
+        SELECT name FROM categories
+        WHERE name NOT IN ('Uncategorized', 'Payment')
+        ORDER BY name
     """)]
-    return sorted(set(_STARTER_CATEGORIES) | set(db_cats)
-                  | set(st.session_state["custom_categories"]))
+    return sorted(set(db_cats) | set(st.session_state["custom_categories"]))
 
 
 def inject_style():
@@ -116,13 +108,14 @@ def categorize_tab(conn):
     st.subheader("Uncategorized — grouped by merchant")
 
     rows = conn.execute("""
-        SELECT merchant_normalized,
+        SELECT t.merchant_normalized,
                COUNT(*) AS txns,
-               ROUND(SUM(CASE WHEN direction = 'credit' THEN -amount ELSE amount END), 2) AS total,
-               GROUP_CONCAT(id) AS ids
-        FROM transactions
-        WHERE category = 'Uncategorized'
-        GROUP BY merchant_normalized
+               ROUND(SUM(CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount END), 2) AS total,
+               GROUP_CONCAT(t.id) AS ids
+        FROM transactions t
+        JOIN categories c ON c.id = t.category_id
+        WHERE c.name = 'Uncategorized'
+        GROUP BY t.merchant_normalized
         ORDER BY ABS(total) DESC
     """).fetchall()
 
@@ -145,13 +138,23 @@ def categorize_tab(conn):
     )
     if st.button(f"Apply All ({n_pending} pending)", disabled=(n_pending == 0), type="primary"):
         for merchant, entry in pending.items():
+            cat_name = entry["category"]
+            # Ensure category exists (handles names added via "+ Add new category…")
+            conn.execute(
+                "INSERT OR IGNORE INTO categories (name, type) VALUES (?, 'spend')",
+                (cat_name,)
+            )
+            seed_category_splits(conn)
+            cat_id = conn.execute(
+                "SELECT id FROM categories WHERE name = ?", (cat_name,)
+            ).fetchone()["id"]
             conn.executemany("""
                 UPDATE transactions
-                SET category = ?, category_source = 'user_manual',
+                SET category_id = ?, category_source = 'user_manual',
                     review_status = 'reviewed'
                 WHERE id = ?
-            """, [(entry["category"], tid) for tid in entry["ids"]])
-            add_merchant_rule(conn, merchant, entry["category"])
+            """, [(cat_id, tid) for tid in entry["ids"]])
+            add_merchant_rule(conn, merchant, cat_name)
         conn.commit()
         st.session_state["pending_categories"] = {}
         st.rerun()
@@ -172,7 +175,7 @@ def categorize_tab(conn):
         with st.container(border=True):
             st.markdown(
                 f'<div class="merchant-header">'
-                f'<span class="merchant-name">{merchant}</span>'
+                f'<span class="merchant-name">{html.escape(merchant)}</span>'
                 f'<span class="merchant-stats">'
                 f'<span class="merchant-meta">{r["txns"]} transaction(s)</span>'
                 f'<span class="merchant-amount">${r["total"]:.2f}</span>'
@@ -263,7 +266,7 @@ def duplicates_tab(conn):
         by_merchant.setdefault(r["merchant_normalized"], []).append(r)
 
     for merchant, group in by_merchant.items():
-        st.markdown(f'<div class="merchant-name">{merchant}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="merchant-name">{html.escape(merchant)}</div>', unsafe_allow_html=True)
         if len(group) > 1:
             if st.button(f"Dismiss all {len(group)} as not duplicates", key=f"dismiss_all_{merchant}"):
                 ids = [g["id"] for g in group]
@@ -284,9 +287,12 @@ def duplicates_tab(conn):
                 c1, c2, c3 = st.columns([2, 2, 1])
                 with c1:
                     st.markdown("**Original**")
-                    st.write(f"${orig['amount']:.2f}")
-                    st.markdown(f"<span class='merchant-meta'>{orig['transaction_date']}</span>",
-                                unsafe_allow_html=True)
+                    if orig is None:
+                        st.warning("Original transaction not found.")
+                    else:
+                        st.write(f"${orig['amount']:.2f}")
+                        st.markdown(f"<span class='merchant-meta'>{orig['transaction_date']}</span>",
+                                    unsafe_allow_html=True)
                 with c2:
                     st.markdown("**Suspected duplicate**")
                     st.write(f"${r['amount']:.2f}")
@@ -296,7 +302,7 @@ def duplicates_tab(conn):
                     if st.button("Confirm", key=f"confirm_{r['id']}"):
                         conn.execute("""
                             UPDATE transactions
-                            SET duplicate_status = 'confirmed_duplicate', include_in_household = 0
+                            SET duplicate_status = 'confirmed_duplicate'
                             WHERE id = ?
                         """, (r["id"],))
                         conn.commit()

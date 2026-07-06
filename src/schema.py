@@ -1,29 +1,59 @@
 """
-Database schema — 5 tables for v1.
+Database schema — v2.
 
-Run directly to (re)initialize: .venv/bin/python src/schema.py
-Safe to call multiple times (CREATE IF NOT EXISTS / INSERT OR IGNORE).
-To start fresh: delete data/spend.db and re-run.
+Run directly to (re)initialize a fresh database:
+    .venv/bin/python src/schema.py
+
+Safe to run on a fresh DB only. Existing databases must use migrate_v2.py.
 """
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "spend.db"
 SEED_CONFIG_PATH = Path(__file__).parent.parent / "data" / "seed_config.json"
 SEED_CONFIG_EXAMPLE = Path(__file__).parent.parent / "seed_config.example.json"
 
+SETTLEMENT_EXCLUDED_TYPES = ("payment", "transfer")
+_SETTLEMENT_EXCLUDED_SQL = ", ".join(f"'{t}'" for t in SETTLEMENT_EXCLUDED_TYPES)
+
+DEFAULT_CATEGORIES: list[tuple[str, str]] = [
+    ("Auto", "spend"),
+    ("Bills", "spend"),
+    ("Coffee & Tea", "spend"),
+    ("Donations", "spend"),
+    ("Eating Out", "spend"),
+    ("Education", "spend"),
+    ("Entertainment", "spend"),
+    ("Family", "spend"),
+    ("Gifts", "spend"),
+    ("Groceries", "spend"),
+    ("Health", "spend"),
+    ("Home", "spend"),
+    ("Payment", "transfer"),
+    ("Personal Care", "spend"),
+    ("Pet", "spend"),
+    ("Recreation", "spend"),
+    ("Rental Property", "spend"),
+    ("Services", "spend"),
+    ("Shopping", "spend"),
+    ("Subscriptions", "spend"),
+    ("Transport", "spend"),
+    ("Travel", "spend"),
+    ("Uncategorized", "spend"),
+]
+
 
 def load_seed_config() -> dict:
-    """Person and account data is local-only (data/ is git-ignored), never
-    hardcoded in source. Copy seed_config.example.json to data/seed_config.json
-    and fill in your household's details."""
+    """Household config is local-only (data/ is git-ignored). Copy
+    seed_config.example.json to data/seed_config.json and fill in your details."""
     if not SEED_CONFIG_PATH.exists():
         raise SystemExit(
             f"Missing {SEED_CONFIG_PATH}.\n"
             f"Copy {SEED_CONFIG_EXAMPLE.name} there and edit it with your "
-            "household's persons and accounts."
+            "household's users and accounts."
         )
     with open(SEED_CONFIG_PATH) as f:
         return json.load(f)
@@ -38,136 +68,323 @@ def get_conn() -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS persons (
+        CREATE TABLE IF NOT EXISTS users (
             id           INTEGER PRIMARY KEY,
-            initials     TEXT UNIQUE NOT NULL,
-            display_name TEXT NOT NULL
+            display_name TEXT NOT NULL UNIQUE
         );
 
         CREATE TABLE IF NOT EXISTS accounts (
             id           INTEGER PRIMARY KEY,
-            owner_id     INTEGER NOT NULL REFERENCES persons(id),
+            owner_id     INTEGER NOT NULL REFERENCES users(id),
             institution  TEXT NOT NULL,
             account_name TEXT NOT NULL,
-            account_type TEXT NOT NULL,  -- credit_card | chequing | savings
+            account_type TEXT NOT NULL CHECK (account_type IN ('credit_card', 'chequing', 'savings')),
             is_active    INTEGER DEFAULT 1,
             UNIQUE(owner_id, institution, account_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS categories (
+            id   INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            type TEXT NOT NULL DEFAULT 'spend'
+                 CHECK (type IN ('spend', 'income', 'transfer', 'investment'))
+        );
+
+        CREATE TABLE IF NOT EXISTS category_splits (
+            id          INTEGER PRIMARY KEY,
+            category_id INTEGER NOT NULL REFERENCES categories(id),
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            pct         REAL NOT NULL CHECK (pct >= 0 AND pct <= 100),
+            UNIQUE(category_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS settlements (
+            id         INTEGER PRIMARY KEY,
+            period     TEXT NOT NULL UNIQUE,
+            settled_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS import_files (
             id              INTEGER PRIMARY KEY,
             account_id      INTEGER NOT NULL REFERENCES accounts(id),
             source_filename TEXT NOT NULL,
-            source_format   TEXT NOT NULL,  -- amex_monthly | amex_annual | ws_visa | ws_chequing_clean
+            source_format   TEXT NOT NULL CHECK (source_format IN (
+                                'amex_monthly', 'amex_annual', 'ws_visa', 'ws_chequing_clean'
+                            )),
             row_count       INTEGER NOT NULL,
+            source_hash     TEXT NOT NULL UNIQUE,
             imported_at     TEXT NOT NULL,
-            UNIQUE(source_filename, row_count)  -- re-importing same file is a no-op
+            UNIQUE(source_filename, row_count)
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
             id                   INTEGER PRIMARY KEY,
             import_file_id       INTEGER NOT NULL REFERENCES import_files(id),
             account_id           INTEGER NOT NULL REFERENCES accounts(id),
-            owner_id             INTEGER NOT NULL REFERENCES persons(id),
-            merchant_raw         TEXT,
-            merchant_normalized  TEXT,
+            owner_id             INTEGER NOT NULL REFERENCES users(id),
+            merchant_raw         TEXT NOT NULL,
+            merchant_normalized  TEXT NOT NULL,
             transaction_date     TEXT NOT NULL,
             posted_date          TEXT,
-            amount               REAL NOT NULL,   -- always positive; direction carries sign meaning
+            amount               REAL NOT NULL CHECK (amount >= 0),
             currency             TEXT DEFAULT 'CAD',
-            direction            TEXT NOT NULL,   -- debit | credit
-            transaction_type     TEXT,            -- purchase | payment | refund | transfer | fee
-            source_category_raw  TEXT,             -- category as given by the source, if any
-            category             TEXT,
-            category_source      TEXT,             -- merchant_rule | source_mapped | none
-            include_in_household INTEGER DEFAULT 1,
-            review_status        TEXT DEFAULT 'unreviewed',
-            duplicate_status     TEXT DEFAULT 'unique',  -- unique | suspected_duplicate | confirmed_duplicate | dismissed
+            direction            TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+            transaction_type     TEXT NOT NULL CHECK (transaction_type IN
+                                     ('purchase', 'payment', 'refund', 'transfer', 'fee')),
+            source_category_raw  TEXT,
+            category_id          INTEGER REFERENCES categories(id),
+            category_source      TEXT NOT NULL CHECK (category_source IN (
+                                     'merchant_rule', 'source_mapped', 'transaction_type',
+                                     'user_manual', 'none'
+                                 )),
+            review_status        TEXT NOT NULL DEFAULT 'unreviewed'
+                                 CHECK (review_status IN ('unreviewed', 'reviewed')),
+            duplicate_status     TEXT NOT NULL DEFAULT 'unique'
+                                 CHECK (duplicate_status IN (
+                                     'unique', 'suspected_duplicate',
+                                     'confirmed_duplicate', 'dismissed'
+                                 )),
             duplicate_of_id      INTEGER REFERENCES transactions(id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_txn_date     ON transactions(transaction_date);
-        CREATE INDEX IF NOT EXISTS idx_txn_category ON transactions(category);
-        CREATE INDEX IF NOT EXISTS idx_txn_owner    ON transactions(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_txn_date        ON transactions(transaction_date);
+        CREATE INDEX IF NOT EXISTS idx_txn_category    ON transactions(category_id);
+        CREATE INDEX IF NOT EXISTS idx_txn_owner       ON transactions(owner_id);
         CREATE INDEX IF NOT EXISTS idx_txn_import_file ON transactions(import_file_id);
 
         CREATE TABLE IF NOT EXISTS merchant_rules (
-            id         INTEGER PRIMARY KEY,
-            pattern    TEXT NOT NULL,
-            category   TEXT NOT NULL,
-            source     TEXT DEFAULT 'user_correction',  -- seed | user_correction
-            created_at TEXT NOT NULL
+            id          INTEGER PRIMARY KEY,
+            pattern     TEXT NOT NULL UNIQUE,
+            category_id INTEGER NOT NULL REFERENCES categories(id),
+            source      TEXT NOT NULL DEFAULT 'user_correction'
+                        CHECK (source IN ('seed', 'user_correction')),
+            created_at  TEXT NOT NULL
         );
     """)
     conn.commit()
 
 
-def seed_merchant_rules(conn: sqlite3.Connection, seed_rules: list) -> None:
-    """One-time seed from the original hardcoded rules list. No-ops if already seeded."""
+def seed_users(conn: sqlite3.Connection) -> dict[str, int]:
+    """Insert users from seed_config. Returns {display_name: id}."""
+    config = load_seed_config()
+    conn.executemany(
+        "INSERT OR IGNORE INTO users (display_name) VALUES (?)",
+        [(u["display_name"],) for u in config["users"]],
+    )
+    conn.commit()
+    return {r["display_name"]: r["id"] for r in conn.execute("SELECT id, display_name FROM users")}
+
+
+def seed_accounts(conn: sqlite3.Connection, users: dict[str, int]) -> dict[str, int]:
+    """Insert accounts from seed_config. Returns {institution:account_name: id}."""
+    config = load_seed_config()
+    conn.executemany("""
+        INSERT OR IGNORE INTO accounts (owner_id, institution, account_name, account_type)
+        VALUES (?, ?, ?, ?)
+    """, [
+        (users[a["owner_name"]], a["institution"], a["account_name"], a["account_type"])
+        for a in config["accounts"]
+    ])
+    conn.commit()
+    return {
+        f"{r['institution']}:{r['account_name']}": r["id"]
+        for r in conn.execute("SELECT id, institution, account_name FROM accounts")
+    }
+
+
+def seed_categories(conn: sqlite3.Connection) -> dict[str, int]:
+    """Insert default categories. Returns {name: id}."""
+    conn.executemany(
+        "INSERT OR IGNORE INTO categories (name, type) VALUES (?, ?)",
+        DEFAULT_CATEGORIES,
+    )
+    conn.commit()
+    return {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
+
+
+def seed_category_splits(conn: sqlite3.Connection) -> None:
+    """Seed 50/50 default splits for all spend categories. No-op for existing rows."""
+    spend_cats = conn.execute("SELECT id FROM categories WHERE type = 'spend'").fetchall()
+    users = conn.execute("SELECT id FROM users").fetchall()
+    conn.executemany(
+        "INSERT OR IGNORE INTO category_splits (category_id, user_id, pct) VALUES (?, ?, ?)",
+        [(c["id"], u["id"], 50.0) for c in spend_cats for u in users],
+    )
+    conn.commit()
+
+
+def seed_merchant_rules(conn: sqlite3.Connection, seed_rules: list[tuple[str, str]]) -> None:
+    """Seed merchant rules from (pattern, category_name) tuples. No-op if already seeded."""
     existing = conn.execute(
         "SELECT COUNT(*) FROM merchant_rules WHERE source = 'seed'"
     ).fetchone()[0]
     if existing:
         return
-    from datetime import datetime, timezone
+    categories = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
     now = datetime.now(timezone.utc).isoformat()
     conn.executemany("""
-        INSERT INTO merchant_rules (pattern, category, source, created_at)
+        INSERT OR IGNORE INTO merchant_rules (pattern, category_id, source, created_at)
         VALUES (?, ?, 'seed', ?)
-    """, [(p, c, now) for p, c in seed_rules])
+    """, [(p, categories[c], now) for p, c in seed_rules if c in categories])
     conn.commit()
 
 
-def get_merchant_rules(conn: sqlite3.Connection) -> list:
-    """Returns rules newest-first, so user corrections override older seed rules
-    when patterns overlap on the same merchant."""
-    rows = conn.execute(
-        "SELECT pattern, category FROM merchant_rules ORDER BY id DESC"
-    ).fetchall()
-    return [(r["pattern"], r["category"]) for r in rows]
+def get_merchant_rules(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Returns (pattern, category_name) tuples, newest-first."""
+    rows = conn.execute("""
+        SELECT mr.pattern, c.name
+        FROM merchant_rules mr
+        JOIN categories c ON c.id = mr.category_id
+        ORDER BY mr.id DESC
+    """).fetchall()
+    return [(r["pattern"], r["name"]) for r in rows]
 
 
-def add_merchant_rule(conn: sqlite3.Connection, pattern: str, category: str) -> None:
-    from datetime import datetime, timezone
+def get_settlement_data(conn: sqlite3.Connection, period: str) -> dict:
+    """Return raw settlement inputs for a YYYY-MM period.
+
+    Returns a dict with:
+      - users: list of {id, display_name, paid, fair_share} — one entry per user
+      - total_spend: net spend across all transactions in the period
+      - txn_count: number of qualifying transactions
+      - uncategorized_count: spend transactions with NULL category_id (excluded from totals)
+
+    Raises ValueError if the DB does not have exactly 2 users (settlement math
+    is defined for exactly two people; the data model supports N but we don't).
+    """
+    users = conn.execute("SELECT id, display_name FROM users ORDER BY id").fetchall()
+    if len(users) != 2:
+        raise ValueError(
+            f"Settlement requires exactly 2 users; found {len(users)}. "
+            "Add or remove users before running settlement."
+        )
+
+    SIGNED = "CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount END"
+    # transaction_type is the hard exclusion: set at parse time from source
+    # signals, not dependent on user-maintained category types.
+    # categories.type = 'spend' is an additional filter for user-controlled
+    # distinctions (e.g. Rental Property as investment).
+    SPEND_FILTER = f"""
+        AND t.transaction_type NOT IN ({_SETTLEMENT_EXCLUDED_SQL})
+          AND c.type = 'spend'
+          AND t.duplicate_status != 'confirmed_duplicate'
+          AND substr(t.transaction_date, 1, 7) = :period
+    """
+
+    # What each user actually paid (they own the account)
+    paid_rows = conn.execute(f"""
+        SELECT t.owner_id, ROUND(SUM({SIGNED}), 2) AS paid
+        FROM transactions t
+        JOIN categories c ON c.id = t.category_id
+        WHERE 1=1 {SPEND_FILTER}
+        GROUP BY t.owner_id
+    """, {"period": period}).fetchall()
+    paid_by_user = {r["owner_id"]: r["paid"] for r in paid_rows}
+
+    # What each user's fair share is across all spend in the period
+    share_rows = conn.execute(f"""
+        SELECT cs.user_id, ROUND(SUM(({SIGNED}) * cs.pct / 100.0), 2) AS fair_share
+        FROM transactions t
+        JOIN categories c ON c.id = t.category_id
+        JOIN category_splits cs ON cs.category_id = t.category_id
+        WHERE 1=1 {SPEND_FILTER}
+        GROUP BY cs.user_id
+    """, {"period": period}).fetchall()
+    share_by_user = {r["user_id"]: r["fair_share"] for r in share_rows}
+
+    total_spend = conn.execute(f"""
+        SELECT ROUND(SUM({SIGNED}), 2)
+        FROM transactions t
+        JOIN categories c ON c.id = t.category_id
+        WHERE 1=1 {SPEND_FILTER}
+    """, {"period": period}).fetchone()[0] or 0.0
+
+    txn_count = conn.execute(f"""
+        SELECT COUNT(*)
+        FROM transactions t
+        JOIN categories c ON c.id = t.category_id
+        WHERE 1=1 {SPEND_FILTER}
+    """, {"period": period}).fetchone()[0]
+
+    uncategorized_count = conn.execute(f"""
+        SELECT COUNT(*) FROM transactions
+        WHERE category_id IS NULL
+          AND transaction_type NOT IN ({_SETTLEMENT_EXCLUDED_SQL})
+          AND duplicate_status != 'confirmed_duplicate'
+          AND substr(transaction_date, 1, 7) = :period
+    """, {"period": period}).fetchone()[0]
+
+    return {
+        "period": period,
+        "users": [
+            {
+                "id": u["id"],
+                "display_name": u["display_name"],
+                "paid": paid_by_user.get(u["id"], 0.0),
+                "fair_share": share_by_user.get(u["id"], 0.0),
+            }
+            for u in users
+        ],
+        "total_spend": total_spend,
+        "txn_count": txn_count,
+        "uncategorized_count": uncategorized_count,
+    }
+
+
+def compute_settlement(data: dict) -> dict:
+    """Compute who owes whom from get_settlement_data() output.
+
+    Adds `balance` (paid - fair_share) to each user entry and a `settlement`
+    key with transfer direction and amount.  settlement is None when the period
+    has no qualifying spend or both users are exactly square.
+    """
+    users = [
+        {**u, "balance": round(u["paid"] - u["fair_share"], 2)}
+        for u in data["users"]
+    ]
+
+    creditor = max(users, key=lambda u: u["balance"])  # overpaid — is owed
+    debtor = min(users, key=lambda u: u["balance"])    # underpaid — owes
+    amount = creditor["balance"]
+
+    settlement = (
+        None
+        if amount <= 0
+        else {
+            "from_user": {"id": debtor["id"], "display_name": debtor["display_name"]},
+            "to_user": {"id": creditor["id"], "display_name": creditor["display_name"]},
+            "amount": amount,
+        }
+    )
+    return {**data, "users": users, "settlement": settlement}
+
+
+def add_merchant_rule(conn: sqlite3.Connection, pattern: str, category_name: str) -> None:
+    category_id = conn.execute(
+        "SELECT id FROM categories WHERE name = ?", (category_name,)
+    ).fetchone()
+    if not category_id:
+        raise ValueError(f"Unknown category: {category_name!r}")
     now = datetime.now(timezone.utc).isoformat()
     conn.execute("""
-        INSERT INTO merchant_rules (pattern, category, source, created_at)
+        INSERT INTO merchant_rules (pattern, category_id, source, created_at)
         VALUES (?, ?, 'user_correction', ?)
-    """, (pattern, category, now))
+        ON CONFLICT(pattern) DO UPDATE SET category_id = excluded.category_id, created_at = excluded.created_at
+    """, (pattern, category_id["id"], now))
     conn.commit()
-
-
-def seed_persons(conn: sqlite3.Connection) -> dict:
-    config = load_seed_config()
-    conn.executemany(
-        "INSERT OR IGNORE INTO persons (initials, display_name) VALUES (?, ?)",
-        [(p["initials"], p["display_name"]) for p in config["persons"]],
-    )
-    conn.commit()
-    return {r["initials"]: r["id"] for r in conn.execute("SELECT id, initials FROM persons")}
-
-
-def seed_accounts(conn: sqlite3.Connection, persons: dict) -> dict:
-    config = load_seed_config()
-    accounts = [
-        (persons[a["owner_initials"]], a["institution"], a["account_name"], a["account_type"])
-        for a in config["accounts"]
-    ]
-    conn.executemany("""
-        INSERT OR IGNORE INTO accounts (owner_id, institution, account_name, account_type)
-        VALUES (?, ?, ?, ?)
-    """, accounts)
-    conn.commit()
-    rows = conn.execute("SELECT id, institution, account_name FROM accounts")
-    return {f"{r['institution']}:{r['account_name']}": r["id"] for r in rows}
 
 
 if __name__ == "__main__":
     conn = get_conn()
     init_db(conn)
-    persons = seed_persons(conn)
-    accounts = seed_accounts(conn, persons)
+    users = seed_users(conn)
+    accounts = seed_accounts(conn, users)
+    categories = seed_categories(conn)
+    seed_category_splits(conn)
+    config = load_seed_config()
+    seed_merchant_rules(conn, [tuple(r) for r in config.get("merchant_rules", [])])
     print("DB initialized:", DB_PATH)
-    print("Persons:", persons)
-    print("Accounts:", accounts)
+    print("Users:", users)
+    print("Accounts:", len(accounts), "accounts")
+    print("Categories:", len(categories), "categories")
     conn.close()

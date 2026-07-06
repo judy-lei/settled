@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport sys, json, sqlite3\nd = json.load(sys.stdin)\npath = d.get('file_path', '')\nif 'schema' not in path and 'migration' not in path:\n    sys.exit(0)\ntry:\n    conn = sqlite3.connect('data/spend.db')\n    conn.execute('PRAGMA foreign_keys=ON')\n    fk = conn.execute('PRAGMA foreign_key_check').fetchall()\n    ic = conn.execute('PRAGMA integrity_check').fetchone()[0]\n    if fk:\n        print('FK check: FAIL', fk)\n        sys.exit(1)\n    if ic != 'ok':\n        print('Integrity check: FAIL', ic)\n        sys.exit(1)\nexcept Exception as e:\n    print('DB check error:', e)\n    sys.exit(1)\n\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport sys, json, os\nd = json.load(sys.stdin)\ncmd = d.get('command', '')\n\nif 'git commit' in cmd:\n    if not os.path.exists('/tmp/settled-precommit-done'):\n        print('BLOCKED: Pre-commit checklist not confirmed.')\n        print()\n        print('Before committing:')\n        print('  1. Run through notes/precommit-checklist.md')\n        print('  2. Confirm /code-review has been run on this diff')\n        print()\n        print('Then unblock with: touch /tmp/settled-precommit-done')\n        sys.exit(1)\n\nif 'gh pr create' in cmd:\n    if not os.path.exists('/tmp/settled-codereview-done'):\n        print('BLOCKED: Code review not confirmed.')\n        print()\n        print('Before opening a PR:')\n        print('  1. Run /code-review on the diff')\n        print('  2. Address all findings')\n        print()\n        print('Then unblock with: touch /tmp/settled-codereview-done')\n        sys.exit(1)\n\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Before closing: is notes/working.md up to date? Check for any in-flight items from this session that are not captured.'"
+          }
+        ]
+      }
+    ]
+  }
+}

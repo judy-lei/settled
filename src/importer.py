@@ -1,8 +1,8 @@
 """
 Multi-source importer. Reads the import file registry from the local
 seed config (data/seed_config.json, git-ignored — see
-seed_config.example.json), skips files already imported (by filename +
-row count), categorizes via categories.py, and loads into the schema.
+seed_config.example.json), skips files already imported (by content hash),
+categorizes via categories.py, and loads into the schema.
 
 Registry format in seed_config.json ("import_files" key):
     { "filename": "statement.csv",       # lives in data/
@@ -13,19 +13,30 @@ Registry format in seed_config.json ("import_files" key):
 Run: .venv/bin/python src/importer.py
 """
 
-from pathlib import Path
+import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 
-from schema import (get_conn, init_db, load_seed_config, seed_persons,
-                    seed_accounts, seed_merchant_rules, get_merchant_rules)
+from schema import (get_conn, init_db, load_seed_config, seed_users,
+                    seed_accounts, seed_categories, seed_category_splits,
+                    seed_merchant_rules, get_merchant_rules,
+                    SETTLEMENT_EXCLUDED_TYPES)
 from parsers import PARSERS
 from categories import categorize, SEED_MERCHANT_RULES
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
 TRUST_TEST_TOLERANCE = 1.00
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def load_import_registry() -> tuple:
@@ -46,28 +57,31 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
     if not filepath.exists():
         return {"status": "missing", "filename": filename}
 
+    source_hash = sha256_file(filepath)
+    existing = conn.execute(
+        "SELECT id FROM import_files WHERE source_hash = ?", (source_hash,)
+    ).fetchone()
+    if existing:
+        return {"status": "skipped (already imported)", "filename": filename}
+
     _, source_format = KNOWN_SOURCES[filename]
     df = PARSERS[source_format](filepath)
     row_count = len(df)
 
-    existing = conn.execute(
-        "SELECT id FROM import_files WHERE source_filename = ? AND row_count = ?",
-        (filename, row_count),
-    ).fetchone()
-    if existing:
-        return {"status": "skipped (already imported)", "filename": filename, "rows": row_count}
+    categories = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
 
     now = datetime.now(timezone.utc).isoformat()
     cur = conn.execute("""
-        INSERT INTO import_files (account_id, source_filename, source_format, row_count, imported_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (account_id, filename, source_format, row_count, now))
+        INSERT INTO import_files (account_id, source_filename, source_format, row_count, source_hash, imported_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (account_id, filename, source_format, row_count, source_hash, now))
     import_file_id = cur.lastrowid
 
     rows = []
     for _, r in df.iterrows():
         cat = categorize(r["merchant_normalized"], rules, r.get("source_category_mapped"),
                           r.get("transaction_type"))
+        category_id = categories.get(cat["category"])
         rows.append((
             import_file_id, account_id, owner_id,
             r["merchant_raw"], r["merchant_normalized"],
@@ -75,8 +89,7 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
             r["posted_date"].strftime("%Y-%m-%d") if pd.notna(r["posted_date"]) else None,
             float(r["amount"]), r["currency"], r["direction"], r["transaction_type"],
             r.get("source_category_mapped"),
-            cat["category"], cat["category_source"],
-            1 if cat["include_in_household"] else 0,
+            category_id, cat["category_source"],
             "unreviewed",
         ))
 
@@ -84,8 +97,8 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
         INSERT INTO transactions (
             import_file_id, account_id, owner_id, merchant_raw, merchant_normalized,
             transaction_date, posted_date, amount, currency, direction, transaction_type,
-            source_category_raw, category, category_source, include_in_household, review_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_category_raw, category_id, category_source, review_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
     conn.commit()
 
@@ -96,11 +109,12 @@ def trust_test(conn, filename: str, import_file_id: int) -> None:
     if filename not in STATEMENT_TOTALS:
         return
     statement_total = STATEMENT_TOTALS[filename]
-    computed = conn.execute("""
+    placeholders = ", ".join("?" * len(SETTLEMENT_EXCLUDED_TYPES))
+    computed = conn.execute(f"""
         SELECT ROUND(SUM(CASE WHEN direction = 'credit' THEN -amount ELSE amount END), 2)
         FROM transactions
-        WHERE import_file_id = ? AND include_in_household = 1
-    """, (import_file_id,)).fetchone()[0] or 0.0
+        WHERE import_file_id = ? AND transaction_type NOT IN ({placeholders})
+    """, (import_file_id, *SETTLEMENT_EXCLUDED_TYPES)).fetchone()[0] or 0.0
 
     diff = round(computed - statement_total, 2)
     status = "PASS" if abs(diff) <= TRUST_TEST_TOLERANCE else "FAIL"
@@ -111,8 +125,10 @@ def trust_test(conn, filename: str, import_file_id: int) -> None:
 def main():
     conn = get_conn()
     init_db(conn)
-    persons = seed_persons(conn)
-    accounts = seed_accounts(conn, persons)
+    users = seed_users(conn)
+    accounts = seed_accounts(conn, users)
+    seed_categories(conn)
+    seed_category_splits(conn)
     seed_merchant_rules(conn, SEED_MERCHANT_RULES)
     rules = get_merchant_rules(conn)
 

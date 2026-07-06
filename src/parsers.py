@@ -38,7 +38,13 @@ def parse_amex_monthly(filepath: Path) -> pd.DataFrame:
     out["currency"] = "CAD"
 
     is_payment = out["merchant_raw"].str.contains("PAYMENT RECEIVED", case=False, na=False)
-    out["transaction_type"] = is_payment.map({True: "payment", False: "purchase"})
+    # Refund detection: credit that isn't a payment. Logic is correct but
+    # unverified — no refunds exist in current monthly data. Validate when
+    # a monthly statement with a refund is imported.
+    is_refund = ~is_payment & (out["direction"] == "credit")
+    out["transaction_type"] = "purchase"
+    out.loc[is_payment, "transaction_type"] = "payment"
+    out.loc[is_refund, "transaction_type"] = "refund"
     out["source_category_mapped"] = None
 
     return out
@@ -62,8 +68,14 @@ def parse_amex_annual(filepath: Path) -> pd.DataFrame:
     out["direction"] = (charges - credits).apply(lambda x: "credit" if x < 0 else "debit")
     out["currency"] = "CAD"
 
+    # Refund detection: Credits $ column is the definitive source signal.
+    # Unverified — no credits exist in current annual data. Validate when
+    # an annual export with a refund row is imported.
+    is_refund = credits > 0
     is_payment = out["merchant_raw"].str.contains("PAYMENT RECEIVED|AUTOPAY", case=False, na=False)
-    out["transaction_type"] = is_payment.map({True: "payment", False: "purchase"})
+    out["transaction_type"] = "purchase"
+    out.loc[is_refund, "transaction_type"] = "refund"
+    out.loc[is_payment, "transaction_type"] = "payment"
 
     out["source_category_mapped"] = [
         map_amex_annual_category(cat, sub)
@@ -71,6 +83,16 @@ def parse_amex_annual(filepath: Path) -> pd.DataFrame:
     ]
 
     return out
+
+
+_WS_VISA_TRANSACTION_TYPE_MAP = {
+    "purchase": "purchase",
+    "refund": "refund",
+    "payment": "payment",
+    "transfer": "transfer",
+    "fee": "fee",
+    "pre-authorized debit": "purchase",  # PAD is a real expense, not its own type
+}
 
 
 def parse_ws_visa(filepath: Path) -> pd.DataFrame:
@@ -82,18 +104,24 @@ def parse_ws_visa(filepath: Path) -> pd.DataFrame:
     out = pd.DataFrame()
     out["merchant_raw"] = df["merchant"].fillna("").str.strip()
     out["merchant_normalized"] = _normalize_merchant(out["merchant_raw"])
-    out["transaction_date"] = pd.to_datetime(df["transaction_date"].str.strip())
+    out["transaction_date"] = pd.to_datetime(df["transaction_date"].str.strip(), format="%Y-%m-%d")
     out["posted_date"] = pd.NaT
 
     raw_amount = pd.to_numeric(df["amount"].str.strip(), errors="coerce")
     out["amount"] = raw_amount.abs()
-    out["direction"] = raw_amount.apply(lambda x: "credit" if x >= 0 else "debit")
+    out["direction"] = raw_amount.apply(lambda x: "credit" if x < 0 else "debit")
     out["currency"] = df["currency"].str.strip()
 
-    out["transaction_type"] = df["transaction_type"].str.strip().str.lower()
+    raw_types = df["transaction_type"].str.strip().str.lower()
+    unknown = set(raw_types.unique()) - set(_WS_VISA_TRANSACTION_TYPE_MAP)
+    if unknown:
+        raise ValueError(
+            f"parse_ws_visa: unrecognized transaction_type values {sorted(unknown)!r}. "
+            "Add them to _WS_VISA_TRANSACTION_TYPE_MAP in parsers.py before importing."
+        )
+    out["transaction_type"] = raw_types.map(_WS_VISA_TRANSACTION_TYPE_MAP)
     out["source_category_mapped"] = df["category"].apply(map_wealthsimple_category)
 
-    # Payments have no merchant — distinct transaction_type already marks them
     return out
 
 
