@@ -7,9 +7,9 @@ we spend, or took a lot of time to set up. The manual process in Excel became
 such a burden that I stopped tracking entirely.
 
 **I wanted a tool that fit how we actually live: sometimes disorganized,
-occasionally last-minute, and definitely privacy-aware.** Most importantly,
-it needed to be something both my partner and I could use — simple, and
-producing accurate, trusted outputs.
+occasionally last-minute, and not willing to hand our accounts over to a third
+party.** Most importantly, it needed to produce numbers both my partner and I
+could actually trust.
 
 **This project leans into the mess instead of running from it:**
 
@@ -18,10 +18,10 @@ producing accurate, trusted outputs.
 - Categories that show up on different cards each month
 - Transparency on who paid for what
 
-Its job: bring clarity to household money — what's spent, who paid, how to
-settle up. Everything else — budgets, goals, forecasts — comes after. It's built on one insight: **trustworthy data comes before split
-logic**. Import and clean first, verify against the statements themselves,
-and only then decide how costs are shared.
+Its job: bring clarity to household money, what's spent, who paid, how to
+settle up. Everything else, budgets, goals, forecasts, comes after.
+**Trustworthy data comes before split logic.** Import and clean first, verify
+against the statements themselves, then decide how costs are shared.
 
 ---
 
@@ -30,45 +30,41 @@ and only then decide how costs are shared.
 - **Import pipeline** — four statement formats (two credit-card exports with
   different schemas, one bank Visa, one chequing export), each with its own
   parser. Where a statement publishes its own total, the import reconciles
-  the computed sum against it (tolerance $1.00) — a parser that can't
+  the computed sum against it (tolerance $1.00). A parser that can't
   reconcile isn't done.
 - **Categorization** — a transparent two-layer system: a user-editable
   merchant-rules table (manual corrections always win) over source-provided
-  category mapping. No ML — by design (see below).
-- **Duplicate detection** — conservative: same-day/same-amount/same-merchant
-  is flagged for human review, never auto-resolved.
+  category mapping. No ML.
+- **Duplicate detection** — same-day, same-amount, same-merchant is flagged
+  for human review, not auto-resolved.
 - **Review UI** (Streamlit) — bulk categorization and duplicate review against
   the local database.
-- **Conversational agent (read-only)** — a command-line agent answers questions
-  over the verified data ("how much did we spend on groceries in June?", "who
-  owes whom?"). Every number it reports comes from a deterministic tool, not the
-  model's own arithmetic — the model selects tools and narrates; a tool-output
-  check locks those results against hand-computed values. The full design
-  contract, including the not-yet-built write path, is in
+- **Conversational agent (read-only)** — a command-line agent that answers
+  questions over the verified data ("how much did we spend on groceries in
+  June?", "who owes whom?"). The model selects and narrates tool calls; every
+  number it reports comes from a deterministic tool. The full design contract,
+  including the write path still in progress, is in
   [docs/AGENT_SPEC.md](docs/AGENT_SPEC.md).
 
-## Where AI is used — and where it deliberately isn't
+## Where AI fits
 
-Each component uses the tool its job demands:
+The working principle: use the simplest tool that can do the job.
 
-- **Categorization: rules, not ML.** A household sees a few hundred unique
-  merchants; a flat, user-editable rules table is fully transparent, and a
-  correction sticks 100% of the time. A classifier would add opacity and a
-  dependency for no benefit at this scale.
-- **CSV parsing: deterministic.** Structured input; a model has nothing to add.
-- **Conversational interface: LLM for language, deterministic tools for math.**
-  Turning "how much on groceries in June" into the right query is what a model
-  is good at; computing the dollar figure is not. So the agent chooses and
-  narrates tool calls but never does the arithmetic — if it states a number,
-  that exact number came from a tool result, and the tool math is locked by a
-  deterministic check against hand-computed values.
-- **PDF and photo extraction (planned next): LLM vision.** Some older
-  statements only exist on paper — no export to download. Code can parse a
-  CSV's rows and columns, but it can't read a photo; that takes a vision
-  model. The model's output isn't trusted by default: first it's tested on
-  sample statements where the correct answers are already known (with
-  personal details masked), and anything it extracts must still add up to
-  the statement's printed total — the same check every import passes.
+Categorization and CSV parsing are deterministic. The input is structured,
+the rules are user-editable, and a correction needs to stick 100% of the
+time. A model adds nothing and would require a dependency the problem doesn't
+justify.
+
+The conversational agent is where a model earns its place. Turning "how much
+on groceries in June?" into the right database query is exactly what it's
+good at. Computing the number is not, so the agent chooses and narrates tool
+calls but doesn't do arithmetic. A tool-output check locks every reported
+number against hand-computed values.
+
+PDF and photo extraction is next. Some older statements only exist on paper.
+The model's output gets tested against labeled samples where the correct
+answers are already known, and anything extracted still has to reconcile
+against the statement total, the same check every import already passes.
 
 ## Key design decisions
 
@@ -77,8 +73,8 @@ The load-bearing ones:
 
 - **Import-first, split-later.** Split rules on dirty data produce wrong
   numbers. Clean the dataset first; splits are the last layer.
-- **Statement owner = payer.** Whoever's statement it is paid that bill —
-  it's a fact, not a guess. Who's *responsible* for a cost is a separate
+- **Statement owner = payer.** Whoever's statement it is paid that bill.
+  It's a fact, not a guess. Who's *responsible* for a cost is a separate
   question, answered later by category splits.
 - **Raw source text is always preserved.** The original statement line is
   stored next to the cleaned-up version, so any transaction can be traced
