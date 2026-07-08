@@ -83,11 +83,11 @@ a weaker signal or drop that mapping.
 
 ## [2026-06-30] Non-spend is excluded by transaction type
 
-**Decision:** `payment` is currently the only recognized non-spend type —
-those transactions stay out of all spend math. To extend: transfers (when
-they appear in imported data, e.g. card bills paid from chequing) and
-proper refund handling (matching a refund to its original purchase; today
-refunds simply net against category totals).
+**Decision:** `payment` and `transfer` are the recognized non-spend types —
+those transactions stay out of all spend math. Refunds are kept in and net
+against their category totals via a signed amount. To extend: proper refund
+handling that matches a refund to its original purchase, rather than only
+netting at the category level.
 
 **Context:** before this, card payments were leaking into spend totals —
 fixing it moved the computed total from $41,309.62 to $64,793.44 on the

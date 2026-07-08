@@ -39,6 +39,13 @@ and only then decide how costs are shared.
   is flagged for human review, never auto-resolved.
 - **Review UI** (Streamlit) — bulk categorization and duplicate review against
   the local database.
+- **Conversational agent (read-only)** — a command-line agent answers questions
+  over the verified data ("how much did we spend on groceries in June?", "who
+  owes whom?"). Every number it reports comes from a deterministic tool, not the
+  model's own arithmetic — the model selects tools and narrates; a tool-output
+  check locks those results against hand-computed values. The full design
+  contract, including the not-yet-built write path, is in
+  [docs/AGENT_SPEC.md](docs/AGENT_SPEC.md).
 
 ## Where AI is used — and where it deliberately isn't
 
@@ -49,6 +56,12 @@ Each component uses the tool its job demands:
   correction sticks 100% of the time. A classifier would add opacity and a
   dependency for no benefit at this scale.
 - **CSV parsing: deterministic.** Structured input; a model has nothing to add.
+- **Conversational interface: LLM for language, deterministic tools for math.**
+  Turning "how much on groceries in June" into the right query is what a model
+  is good at; computing the dollar figure is not. So the agent chooses and
+  narrates tool calls but never does the arithmetic — if it states a number,
+  that exact number came from a tool result, and the tool math is locked by a
+  deterministic check against hand-computed values.
 - **PDF and photo extraction (planned next): LLM vision.** Some older
   statements only exist on paper — no export to download. Code can parse a
   CSV's rows and columns, but it can't read a photo; that takes a vision
