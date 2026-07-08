@@ -129,6 +129,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             amount               REAL NOT NULL CHECK (amount >= 0),
             currency             TEXT DEFAULT 'CAD',
             direction            TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+            -- Adding a type here? Review these filters in the same commit:
+            --   src/schema.py SETTLEMENT_EXCLUDED_TYPES (should the new type be excluded from spend?)
+            --   src/agent/tools_read.py query_spend (uncategorized_count_in_period WHERE clause)
+            --   src/agent/tools_read.py list_uncategorized (WHERE clause on what needs categorization)
             transaction_type     TEXT NOT NULL CHECK (transaction_type IN
                                      ('purchase', 'payment', 'refund', 'transfer', 'fee')),
             source_category_raw  TEXT,

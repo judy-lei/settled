@@ -6,6 +6,30 @@ Most recent first.
 
 ---
 
+## [2026-07-07] The agent never computes money — tool-narration architecture
+
+Every number the agent states — spend totals, settlement amounts, counts — comes
+from a deterministic tool result, not from the model's own arithmetic.
+
+**Options considered:**
+1. Agent computes derived figures (e.g. per-transaction average, % of total) from
+   tool results in the same response.
+2. Agent narrates only what tools return; any derived figure requires a tool call.
+
+**Decision:** option 2, enforced via prompt and verified in S01–S08.
+
+**Trade-off:** chattier flows (an "average per transaction" question requires a list
+call, not a division); slower for multi-step derived questions. Against: a model
+doing arithmetic looks right most of the time but can hallucinate, round wrong, or
+misattribute a figure. The tool result is the audit trail — no tool result, no audit
+trail. For a financial tool, silent arithmetic errors are the worst failure mode.
+
+**Revisit if:** user research shows the narration-only constraint produces responses
+so constrained they're unhelpful, and the error rate on model arithmetic in evals
+is demonstrably low.
+
+---
+
 ## [2026-06-30] A single correction creates a merchant rule
 
 **Decision:** One manual correction immediately creates a rule (individual

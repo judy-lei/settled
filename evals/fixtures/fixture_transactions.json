@@ -1,0 +1,231 @@
+{
+  "_notes": "Fixture data for S01-S08 eval scenarios. Invented amounts, real merchant names. Never real household data. Build with: .venv/bin/python evals/fixtures/build_fixture.py",
+  "_periods": ["2026-05", "2026-06"],
+  "_splits": "Groceries 60/40 (Alex/Sam), Pet 100/0 (Alex). All others 50/50.",
+
+  "users": [
+    {"display_name": "Alex"},
+    {"display_name": "Sam"}
+  ],
+
+  "accounts": [
+    {"owner": "Alex", "institution": "Amex",       "account_name": "Cobalt", "account_type": "credit_card"},
+    {"owner": "Sam",  "institution": "WS",          "account_name": "Visa",   "account_type": "credit_card"}
+  ],
+
+  "categories": [
+    {"name": "Coffee & Tea", "type": "spend"},
+    {"name": "Eating Out",   "type": "spend"},
+    {"name": "Groceries",    "type": "spend"},
+    {"name": "Payment",      "type": "transfer"},
+    {"name": "Pet",          "type": "spend"},
+    {"name": "Shopping",     "type": "spend"},
+    {"name": "Transport",    "type": "spend"}
+  ],
+
+  "category_splits": [
+    {"category": "Coffee & Tea", "user": "Alex", "pct": 50},
+    {"category": "Coffee & Tea", "user": "Sam",  "pct": 50},
+    {"category": "Eating Out",   "user": "Alex", "pct": 50},
+    {"category": "Eating Out",   "user": "Sam",  "pct": 50},
+    {"category": "Groceries",    "user": "Alex", "pct": 60},
+    {"category": "Groceries",    "user": "Sam",  "pct": 40},
+    {"category": "Pet",          "user": "Alex", "pct": 100},
+    {"category": "Pet",          "user": "Sam",  "pct": 0},
+    {"category": "Shopping",     "user": "Alex", "pct": 50},
+    {"category": "Shopping",     "user": "Sam",  "pct": 50},
+    {"category": "Transport",    "user": "Alex", "pct": 50},
+    {"category": "Transport",    "user": "Sam",  "pct": 50}
+  ],
+
+  "import_files": [
+    {"label": "may_alex", "account": "Alex/Amex/Cobalt", "source_filename": "amex-cobalt-202605-fixture.csv", "source_format": "amex_monthly",  "row_count": 4},
+    {"label": "may_sam",  "account": "Sam/WS/Visa",      "source_filename": "ws-visa-202605-fixture.csv",     "source_format": "ws_visa",        "row_count": 3},
+    {"label": "jun_alex", "account": "Alex/Amex/Cobalt", "source_filename": "amex-cobalt-202606-fixture.csv", "source_format": "amex_monthly",   "row_count": 7},
+    {"label": "jun_sam",  "account": "Sam/WS/Visa",      "source_filename": "ws-visa-202606-fixture.csv",     "source_format": "ws_visa",        "row_count": 4}
+  ],
+
+  "transactions": [
+    {
+      "label": "T01",
+      "import_file": "may_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "PETCO #812", "merchant_normalized": "PETCO",
+      "transaction_date": "2026-05-10", "amount": 80.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Pet", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S06 — pet list May"
+    },
+    {
+      "label": "T02",
+      "import_file": "may_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "PETCO #812", "merchant_normalized": "PETCO",
+      "transaction_date": "2026-05-22", "amount": 35.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Pet", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S06 — pet list May"
+    },
+    {
+      "label": "T03",
+      "import_file": "may_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "INDIGO BOOKS TORONTO", "merchant_normalized": "INDIGO",
+      "transaction_date": "2026-05-08", "amount": 60.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Shopping", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S07 — net Shopping May (gross purchase)"
+    },
+    {
+      "label": "T04",
+      "import_file": "may_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "INDIGO BOOKS TORONTO", "merchant_normalized": "INDIGO",
+      "transaction_date": "2026-05-15", "amount": 25.00,
+      "direction": "credit", "transaction_type": "refund",
+      "category": "Shopping", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S07 — net Shopping May (refund; net = $60 - $25 = $35)"
+    },
+    {
+      "label": "T05",
+      "import_file": "may_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "TIM HORTONS #422", "merchant_normalized": "TIM HORTONS",
+      "transaction_date": "2026-05-12", "amount": 45.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Eating Out", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "May filler spend"
+    },
+    {
+      "label": "T06",
+      "import_file": "may_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "LOBLAWS #1042", "merchant_normalized": "LOBLAWS",
+      "transaction_date": "2026-05-18", "amount": 200.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Groceries", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "May filler spend"
+    },
+    {
+      "label": "T07",
+      "import_file": "may_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "AMEX ONLINE PAYMENT", "merchant_normalized": "AMEX PAYMENT",
+      "transaction_date": "2026-05-31", "amount": 500.00,
+      "direction": "credit", "transaction_type": "payment",
+      "category": "Payment", "category_source": "transaction_type",
+      "duplicate_status": "unique",
+      "_scenario": "S08 analogue for May — payment must be excluded from spend"
+    },
+    {
+      "label": "T08",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "LOBLAWS #1042", "merchant_normalized": "LOBLAWS",
+      "transaction_date": "2026-06-05", "amount": 150.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Groceries", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S01 S02 S04 — June groceries, Alex's account"
+    },
+    {
+      "label": "T09",
+      "import_file": "jun_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "METRO #287", "merchant_normalized": "METRO",
+      "transaction_date": "2026-06-12", "amount": 100.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Groceries", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S01 S02 S04 — June groceries, Sam's account"
+    },
+    {
+      "label": "T10",
+      "import_file": "jun_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "MCDONALD'S #4471", "merchant_normalized": "MCDONALD'S",
+      "transaction_date": "2026-06-08", "amount": 22.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Eating Out", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S01 S03 S04 — June eating out, Sam"
+    },
+    {
+      "label": "T11",
+      "import_file": "jun_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "BURGER KING #891", "merchant_normalized": "BURGER KING",
+      "transaction_date": "2026-06-20", "amount": 18.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Eating Out", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S01 S03 S04 — June eating out, Sam"
+    },
+    {
+      "label": "T12",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "STARBUCKS #2211", "merchant_normalized": "STARBUCKS",
+      "transaction_date": "2026-06-03", "amount": 30.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Coffee & Tea", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S01 S04 — June coffee, Alex. T18 is a confirmed_duplicate of this row."
+    },
+    {
+      "label": "T13",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "PRESTO", "merchant_normalized": "PRESTO",
+      "transaction_date": "2026-06-15", "amount": 50.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Transport", "category_source": "merchant_rule",
+      "duplicate_status": "unique",
+      "_scenario": "S01 S04 — June transport, Alex"
+    },
+    {
+      "label": "T14",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "AMAZON MKTPL CA*AB1CD", "merchant_normalized": "AMAZON MKTPL",
+      "transaction_date": "2026-06-10", "amount": 75.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": null, "category_source": "none",
+      "duplicate_status": "unique",
+      "_scenario": "S05 — uncategorized row 1 of 3; excluded from totals but counted in uncategorized_count"
+    },
+    {
+      "label": "T15",
+      "import_file": "jun_sam", "account": "Sam/WS/Visa", "owner": "Sam",
+      "merchant_raw": "APPLE.COM/BILL", "merchant_normalized": "APPLE.COM",
+      "transaction_date": "2026-06-18", "amount": 15.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": null, "category_source": "none",
+      "duplicate_status": "unique",
+      "_scenario": "S05 — uncategorized row 2 of 3"
+    },
+    {
+      "label": "T16",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "NETFLIX.COM", "merchant_normalized": "NETFLIX",
+      "transaction_date": "2026-06-25", "amount": 18.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": null, "category_source": "none",
+      "duplicate_status": "unique",
+      "_scenario": "S05 — uncategorized row 3 of 3"
+    },
+    {
+      "label": "T17",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "AMEX ONLINE PAYMENT", "merchant_normalized": "AMEX PAYMENT",
+      "transaction_date": "2026-06-30", "amount": 400.00,
+      "direction": "credit", "transaction_type": "payment",
+      "category": "Payment", "category_source": "transaction_type",
+      "duplicate_status": "unique",
+      "_scenario": "S08 — payment must be excluded from all spend totals"
+    },
+    {
+      "label": "T18",
+      "import_file": "jun_alex", "account": "Alex/Amex/Cobalt", "owner": "Alex",
+      "merchant_raw": "STARBUCKS #2211", "merchant_normalized": "STARBUCKS",
+      "transaction_date": "2026-06-03", "amount": 30.00,
+      "direction": "debit", "transaction_type": "purchase",
+      "category": "Coffee & Tea", "category_source": "merchant_rule",
+      "duplicate_status": "confirmed_duplicate",
+      "duplicate_of_label": "T12",
+      "_scenario": "S01 S04 — confirmed duplicate of T12; must be excluded from all totals"
+    }
+  ]
+}

@@ -1,0 +1,147 @@
+"""
+Deterministic tool-output check — Slice 1.
+
+Asserts the read tools return the hand-computed ground truth in
+`fixture_expected.py` for the tool-checkable half of S01–S08. No model in the
+loop: this is the regression lock that makes `fixture_expected.py` active rather
+than declarative. If a future change silently alters a tool's numbers, this
+fails.
+
+This is NOT the reliability eval. Whether the *agent* picks the right tool and
+narrates without embellishment — the slice's actual risk — is measured by the
+agent-behavior suite (LLM in the loop, n_trials, must-not-compute, caveat
+wording) that lands in Slice 2 as `evals/run.py`. See EVAL_SPEC.md.
+
+Run: .venv/bin/python evals/check_tools.py   (exit 0 = all pass, 1 = any fail)
+"""
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).parent.parent
+_FIXTURES = Path(__file__).parent / "fixtures"
+sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_FIXTURES))
+
+import fixture_expected as fx
+from build_fixture import EVAL_DB, FIXTURE_JSON, build
+
+from agent.tools_read import get_settlement, query_spend
+
+
+def _money(x) -> float:
+    """Compare dollar figures at cent precision, never on raw float identity."""
+    return round((x or 0.0) + 0.0, 2)
+
+
+def _pet_subset(txns: list) -> list:
+    return [
+        {"date": t["date"], "merchant": t["merchant"],
+         "amount": _money(t["amount"]), "owner": t["owner"]}
+        for t in txns
+    ]
+
+
+_checks: list[tuple] = []
+
+
+def check(name: str, actual, expected) -> None:
+    _checks.append((actual == expected, name, expected, actual))
+
+
+def rebuild_fixture() -> None:
+    if EVAL_DB.exists():
+        EVAL_DB.unlink()
+    conn = sqlite3.connect(EVAL_DB)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    build(conn, json.loads(FIXTURE_JSON.read_text()))
+    conn.close()
+
+
+def run_checks(conn: sqlite3.Connection) -> None:
+    # S01 / S08 — total June spend (payments excluded; equal total proves it)
+    r = query_spend(conn, "2026-06")
+    check("S01 June total spend", _money(r["total"]), _money(fx.JUNE_TOTAL_SPEND))
+    check("S01 June txn_count", r["txn_count"], fx.JUNE_TXN_COUNT)
+    check("S01 June uncategorized count",
+          r["caveats"]["uncategorized_count_in_period"], fx.JUNE_UNCATEGORIZED_COUNT)
+    check("S08 $400 payment excluded (total unchanged)",
+          _money(r["total"]), _money(fx.JUNE_TOTAL_SPEND))
+
+    # S02 — Groceries, June
+    r = query_spend(conn, "2026-06", category="Groceries")
+    check("S02 June Groceries total", _money(r["total"]), _money(fx.JUNE_GROCERIES_TOTAL))
+    check("S02 June Groceries txn_count", r["txn_count"], fx.JUNE_GROCERIES_TXN_COUNT)
+
+    # S03 — Eating Out, Sam, June
+    r = query_spend(conn, "2026-06", owner="Sam", category="Eating Out")
+    check("S03 June Sam Eating Out total", _money(r["total"]), _money(fx.JUNE_EATING_OUT_SAM))
+    check("S03 June Sam Eating Out txn_count", r["txn_count"], fx.JUNE_EATING_OUT_SAM_TXN_COUNT)
+
+    # S06 — Pet, May, list mode (also exercises the new truncation fields)
+    r = query_spend(conn, "2026-05", category="Pet", mode="list")
+    check("S06 May Pet returned", r["returned"], len(fx.MAY_PET_TRANSACTIONS))
+    check("S06 May Pet not truncated", r["list_truncated"], False)
+    check("S06 May Pet rows", _pet_subset(r["transactions"]), _pet_subset(fx.MAY_PET_TRANSACTIONS))
+
+    # S07 — net Shopping, May (refund nets against purchase)
+    r = query_spend(conn, "2026-05", category="Shopping")
+    check("S07 May Shopping net total", _money(r["total"]), _money(fx.MAY_SHOPPING_NET))
+    check("S07 May Shopping txn_count", r["txn_count"], fx.MAY_SHOPPING_TXN_COUNT)
+    check("S07 May Shopping credit_count", r["credit_count"], 1)
+    check("S07 May Shopping credit_total", _money(r["credit_total"]), 25.00)
+
+    # S04 / S05 — settlement, June
+    s = get_settlement(conn, "2026-06")
+    users = {u["display_name"]: u for u in s["users"]}
+    check("S04 Alex paid", _money(users["Alex"]["paid"]), _money(fx.JUNE_ALEX_PAID))
+    check("S04 Alex fair_share", _money(users["Alex"]["fair_share"]), _money(fx.JUNE_ALEX_FAIR_SHARE))
+    check("S04 Alex balance", _money(users["Alex"]["balance"]), _money(fx.JUNE_ALEX_BALANCE))
+    check("S04 Sam paid", _money(users["Sam"]["paid"]), _money(fx.JUNE_SAM_PAID))
+    check("S04 Sam fair_share", _money(users["Sam"]["fair_share"]), _money(fx.JUNE_SAM_FAIR_SHARE))
+    check("S04 Sam balance", _money(users["Sam"]["balance"]), _money(fx.JUNE_SAM_BALANCE))
+    check("S04 settlement from_user",
+          s["settlement"]["from_user"]["display_name"], fx.JUNE_SETTLEMENT["from_user"])
+    check("S04 settlement to_user",
+          s["settlement"]["to_user"]["display_name"], fx.JUNE_SETTLEMENT["to_user"])
+    check("S04 settlement amount", _money(s["settlement"]["amount"]), _money(fx.JUNE_SETTLEMENT["amount"]))
+    check("S05 settlement surfaces uncategorized_count", s["uncategorized_count"], fx.JUNE_UNCATEGORIZED_COUNT)
+
+    # Books-balance invariants (deterministic, independent of the constants above)
+    check("Invariant: fair shares sum to total spend",
+          _money(users["Alex"]["fair_share"] + users["Sam"]["fair_share"]), _money(s["total_spend"]))
+    check("Invariant: balances sum to zero",
+          _money(users["Alex"]["balance"] + users["Sam"]["balance"]), 0.00)
+
+
+def main() -> int:
+    rebuild_fixture()
+    conn = sqlite3.connect(EVAL_DB)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        run_checks(conn)
+    finally:
+        conn.close()
+
+    failures = [c for c in _checks if not c[0]]
+    print()
+    for ok, name, expected, actual in _checks:
+        tag = "PASS" if ok else "FAIL"
+        line = f"  [{tag}] {name}"
+        if not ok:
+            line += f"\n         expected: {expected!r}\n         actual:   {actual!r}"
+        print(line)
+    print(f"\n{len(_checks) - len(failures)}/{len(_checks)} checks passed.")
+    if failures:
+        print(f"{len(failures)} FAILED — tool output no longer matches fixture_expected.py.")
+        return 1
+    print("All tool outputs match hand-computed ground truth.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

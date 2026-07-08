@@ -17,6 +17,9 @@ notes/
 # One-time migration scripts (local-state-specific, already ran)
 src/migrate_v2.py
 
+# Generated eval database (rebuilt deterministically from fixture_transactions.json)
+evals/fixtures/eval.db
+
 # Python
 .venv/
 __pycache__/

@@ -1,2 +1,3 @@
+anthropic==0.116.0
 pandas
 streamlit
