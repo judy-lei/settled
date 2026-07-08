@@ -8,15 +8,9 @@ Most recent first.
 
 ## [2026-07-07] The agent never computes money — tool-narration architecture
 
-Every number the agent states — spend totals, settlement amounts, counts — comes
-from a deterministic tool result, not from the model's own arithmetic.
-
-**Options considered:**
-1. Agent computes derived figures (e.g. per-transaction average, % of total) from
-   tool results in the same response.
-2. Agent narrates only what tools return; any derived figure requires a tool call.
-
-**Decision:** option 2, enforced via prompt and verified in S01–S08.
+**Decision:** Every number the agent states comes from a deterministic tool result,
+not the model's own arithmetic. Any derived figure requires a tool call — the agent
+narrates, it doesn't calculate. Enforced via prompt.
 
 **Trade-off:** chattier flows (an "average per transaction" question requires a list
 call, not a division); slower for multi-step derived questions. Against: a model
@@ -89,13 +83,11 @@ against their category totals via a signed amount. To extend: proper refund
 handling that matches a refund to its original purchase, rather than only
 netting at the category level.
 
-**Context:** before this, card payments were leaking into spend totals —
-fixing it moved the computed total from $41,309.62 to $64,793.44 on the
-same data.
+**Context:** card payments were leaking into spend totals before the type
+exclusion was in place.
 
-**Revisit if/when:** each new source's parser decides how to determine the
-type (some sources provide it; Amex is inferred from merchant text) — extend
-the recognized non-spend types as new ones show up.
+**Revisit if/when:** category-level refund netting starts producing misleading
+totals — that's the trigger for implementing transaction-level refund matching.
 
 ---
 
@@ -112,9 +104,8 @@ scales.
 **Criteria:** schema changes on a single-user local SQLite file are cheap;
 over-designing now costs more than migrating later.
 
-**Revisit if/when:** deferral is sequencing, not refusal — tables get added
-as concrete needs arrive (as happened with `merchant_rules` and the
-duplicate columns).
+**Revisit if/when:** no fixed trigger — this decision expires naturally. Add
+tables when a feature is blocked without them, not speculatively.
 
 ---
 
@@ -141,7 +132,7 @@ classifier, no embeddings.
 rules-table scale. The table is fully transparent (you can see exactly why a
 transaction was categorized) and corrections stick 100% of the time.
 "Learning" means the user's correction becomes a rule applied on the next
-import — explicit, not opaque. For financial data, trust beats automation.
+import — explicit, not opaque.
 
 **Revisit if/when:** merchant strings across providers get inconsistent
 enough to hurt — normalization logic would come first, still not ML. Or if
