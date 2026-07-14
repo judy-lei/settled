@@ -87,8 +87,7 @@ def report(year: int = None):
     rows = conn.execute(f"""
         SELECT t.merchant_normalized, t.amount, t.transaction_date
         FROM transactions t
-        JOIN categories c ON c.id = t.category_id
-        WHERE c.name = 'Uncategorized' {year_filter}
+        WHERE t.category_id IS NULL {year_filter}
         ORDER BY t.amount DESC
         LIMIT 30
     """, params).fetchall()
@@ -97,8 +96,7 @@ def report(year: int = None):
             print(f"  ${r['amount']:>8.2f}  {r['transaction_date']}  {r['merchant_normalized']}")
         n_total = conn.execute(f"""
             SELECT COUNT(*) FROM transactions t
-            JOIN categories c ON c.id = t.category_id
-            WHERE c.name = 'Uncategorized' {year_filter}
+            WHERE t.category_id IS NULL {year_filter}
         """, params).fetchone()[0]
         if n_total > 30:
             print(f"  ... and {n_total - 30} more")

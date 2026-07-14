@@ -22,7 +22,7 @@ def get_categories(conn) -> list[str]:
         st.session_state["custom_categories"] = []
     db_cats = [r[0] for r in conn.execute("""
         SELECT name FROM categories
-        WHERE name NOT IN ('Uncategorized', 'Payment')
+        WHERE name NOT IN ('Payment')
         ORDER BY name
     """)]
     return sorted(set(db_cats) | set(st.session_state["custom_categories"]))
@@ -113,8 +113,7 @@ def categorize_tab(conn):
                ROUND(SUM(CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount END), 2) AS total,
                GROUP_CONCAT(t.id) AS ids
         FROM transactions t
-        JOIN categories c ON c.id = t.category_id
-        WHERE c.name = 'Uncategorized'
+        WHERE t.category_id IS NULL
         GROUP BY t.merchant_normalized
         ORDER BY ABS(total) DESC
     """).fetchall()

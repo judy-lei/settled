@@ -29,6 +29,7 @@ import fixture_expected as fx
 from build_fixture import EVAL_DB, FIXTURE_JSON, build
 
 from agent.tools_read import get_settlement, query_spend
+from categories import categorize, map_wealthsimple_category, map_amex_annual_category
 
 
 def _money(x) -> float:
@@ -117,7 +118,32 @@ def run_checks(conn: sqlite3.Connection) -> None:
           _money(users["Alex"]["balance"] + users["Sam"]["balance"]), 0.00)
 
 
+def check_write_path() -> None:
+    """Lock the categorize() write-path contract: unmatched input must produce
+    category=None, not the string 'Uncategorized'. These assertions are the
+    root-cause fix for P-01 — they prevent the fixture/pipeline divergence
+    that let the bug survive undetected."""
+    check("write path: unmatched merchant → None",
+          categorize("UNKNOWN MERCHANT XYZ", rules=[])["category"], None)
+    check("write path: unmatched merchant category_source",
+          categorize("UNKNOWN MERCHANT XYZ", rules=[])["category_source"], "none")
+    check("write path: WS 'miscellaneous' → None",
+          map_wealthsimple_category("miscellaneous"), None)
+    check("write path: WS 'rent' → None",
+          map_wealthsimple_category("rent"), None)
+    check("write path: WS 'other work' → None",
+          map_wealthsimple_category("other work"), None)
+    check("write path: WS 'uncategorized' → None",
+          map_wealthsimple_category("uncategorized"), None)
+    check("write path: Amex 'other/other charges' → None",
+          map_amex_annual_category("other", "other charges"), None)
+    # Confirm a mapped value still works (regression guard)
+    check("write path: WS 'groceries' still maps correctly",
+          map_wealthsimple_category("groceries"), "Groceries")
+
+
 def main() -> int:
+    check_write_path()
     rebuild_fixture()
     conn = sqlite3.connect(EVAL_DB)
     conn.row_factory = sqlite3.Row

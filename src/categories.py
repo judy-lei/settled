@@ -5,7 +5,7 @@ mapping (primary signal where the source provides one).
 Precedence (highest wins):
     1. Merchant rules table   — your manual corrections, always win
     2. Source category, mapped to our taxonomy — used when no rule matches
-    3. Uncategorized          — flagged for review
+    3. None (category_id NULL) — flagged for review
 
 Merchant rules only predict CATEGORY. Household-vs-personal is deliberately
 NOT decided at this stage — it's a split-time question, configured later as
@@ -78,10 +78,10 @@ WEALTHSIMPLE_CATEGORY_MAP = {
     "kids' activities": "Family",
     "education": "Education",
     "donations": "Donations",
-    "other work": "Uncategorized",
-    "rent": "Uncategorized",  # ambiguous — household vs personal, needs review
-    "miscellaneous": "Uncategorized",
-    "uncategorized": "Uncategorized",
+    "other work": None,       # ambiguous — needs review
+    "rent": None,             # household vs personal — needs review
+    "miscellaneous": None,    # needs review
+    "uncategorized": None,    # needs review
 }
 
 AMEX_ANNUAL_CATEGORY_MAP = {
@@ -94,7 +94,7 @@ AMEX_ANNUAL_CATEGORY_MAP = {
     ("other", "communications"): "Bills",
     ("travel", "travel related"): "Travel",
     ("merchandise", "gas"): "Transport",
-    ("other", "other charges"): "Uncategorized",
+    ("other", "other charges"): None,  # needs review
     ("other", "health care"): "Health",
     ("financial services", "fee services"): "Subscriptions",
     ("travel", "lodging"): "Travel",
@@ -115,6 +115,7 @@ def apply_merchant_rule(merchant_normalized: str, rules: list):
 
 
 def map_wealthsimple_category(source_category: str):
+    """Returns mapped category name, None if unmapped or explicitly needs review."""
     if not source_category:
         return None
     return WEALTHSIMPLE_CATEGORY_MAP.get(source_category.strip().lower())
@@ -135,7 +136,7 @@ def categorize(merchant_normalized: str, rules: list, source_category: str = Non
     `source_category` should already be mapped to our taxonomy by the caller
     (parsers.py) before being passed in here, or None if unavailable.
 
-    Returns dict: category (name string), category_source
+    Returns dict: category (name string or None), category_source
     """
     if transaction_type == "payment":
         return {"category": "Payment", "category_source": "transaction_type"}
@@ -147,4 +148,4 @@ def categorize(merchant_normalized: str, rules: list, source_category: str = Non
     if source_category:
         return {"category": source_category, "category_source": "source_mapped"}
 
-    return {"category": "Uncategorized", "category_source": "none"}
+    return {"category": None, "category_source": "none"}
