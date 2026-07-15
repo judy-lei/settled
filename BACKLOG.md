@@ -38,6 +38,16 @@ graduates into scoped work only when it's picked up.
   Decide whether these share one preview surface or diverge, and how each
   signals what needs review.
 
+## Test quality
+
+- **`check_report_queries()` structural gap.** The function tests inline SQL that
+  mimics `report.py`'s WHERE clause rather than calling `report.report()` directly.
+  `SIGNED_AMOUNT` is imported from `report.py` so the amount expression is anchored,
+  but the JOIN structure isn't — if the INNER JOIN regressed, this assertion would
+  still pass. Fix: split `report.py`'s query logic from the print calls so it can
+  be called and introspected, or capture stdout and assert on it. (Surfaced: Group A
+  light retro, 2026-07-14.)
+
 ## New tool ideas
 
 - None yet — the v1 catalog is fixed at seven tools; new ideas land here first.
