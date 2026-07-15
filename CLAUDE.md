@@ -84,8 +84,12 @@ Scoped by the kind of change:
   gated by the same reconciliation check at import time.
 - **UI changes:** manual QA in a real browser — click through the changed
   flow before calling it done, don't assume correctness from reading code.
-- **Schema changes:** regression-checked as behavior-preserving — re-run the
-  full import and compare category totals before and after.
+- **Schema changes:** regression-checked as behavior-preserving — capture
+  category totals before branching, re-run the full import after, and compare.
+  The automated PRAGMA hook (`foreign_key_check` + `integrity_check`) runs on
+  every schema.py edit and checks that the database structure is intact. It
+  does not check whether query results or spend totals are correct. Both checks
+  are required.
 - **Money math (settlement, reporting):** ships with automated test cases
   using hand-computed expected results, run as regression tests on every
   change. Cover edge cases: refunds, 100/0 splits, excluded payments. A
