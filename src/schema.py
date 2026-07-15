@@ -42,7 +42,6 @@ DEFAULT_CATEGORIES: list[tuple[str, str]] = [
     ("Subscriptions", "spend"),
     ("Transport", "spend"),
     ("Travel", "spend"),
-    ("Uncategorized", "spend"),
 ]
 
 

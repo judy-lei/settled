@@ -10,12 +10,11 @@ from schema import get_conn
 
 SIGNED_AMOUNT = "CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount END"
 
-# Spend transactions: real charges and refunds, no payments or transfers,
-# no confirmed duplicates. The categories type='spend' filter adds a second
-# layer once categories are typed; the transaction_type filter handles it
-# correctly even while all categories are still the default type='spend'.
-SPEND_FILTER = """
-    JOIN categories c ON c.id = t.category_id
+# Spend conditions: real charges and refunds, no payments or transfers,
+# no confirmed duplicates. No JOIN to categories — NULL-category (uncategorized)
+# rows are spend and belong in totals. Use LEFT JOIN + COALESCE in by-category
+# queries so they appear as 'Uncategorized' rather than being silently dropped.
+_SPEND_WHERE = """
     WHERE t.transaction_type NOT IN ('payment', 'transfer')
       AND t.duplicate_status != 'confirmed_duplicate'
 """
@@ -34,11 +33,13 @@ def report(year: int = None):
     # By category
     print("\n--- Spend by category (net of refunds; excludes payments/transfers) ---")
     rows = conn.execute(f"""
-        SELECT c.name AS category, COUNT(*) AS txns,
+        SELECT COALESCE(c.name, 'Uncategorized') AS category,
+               COUNT(*) AS txns,
                ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
         FROM transactions t
-        {SPEND_FILTER} {year_filter}
-        GROUP BY c.name
+        LEFT JOIN categories c ON c.id = t.category_id
+        {_SPEND_WHERE} {year_filter}
+        GROUP BY COALESCE(c.name, 'Uncategorized')
         ORDER BY total DESC
     """, params).fetchall()
     for r in rows:
@@ -47,7 +48,7 @@ def report(year: int = None):
     total = conn.execute(f"""
         SELECT ROUND(SUM({SIGNED_AMOUNT}), 2)
         FROM transactions t
-        {SPEND_FILTER} {year_filter}
+        {_SPEND_WHERE} {year_filter}
     """, params).fetchone()[0]
     print(f"\n  {'TOTAL':<20}          ${(total or 0):>10.2f}")
 
@@ -58,7 +59,7 @@ def report(year: int = None):
                ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
         FROM transactions t
         JOIN users u ON t.owner_id = u.id
-        {SPEND_FILTER} {year_filter}
+        {_SPEND_WHERE} {year_filter}
         GROUP BY u.display_name
         ORDER BY total DESC
     """, params).fetchall()
@@ -75,7 +76,7 @@ def report(year: int = None):
         LEFT JOIN categories c ON c.id = t.category_id
         WHERE (t.transaction_type IN ('payment', 'transfer')
                OR t.duplicate_status = 'confirmed_duplicate')
-          {year_filter.replace('t.transaction_date', 't.transaction_date')}
+          {year_filter}
         GROUP BY category
         ORDER BY total DESC
     """, params).fetchall()
@@ -87,8 +88,7 @@ def report(year: int = None):
     rows = conn.execute(f"""
         SELECT t.merchant_normalized, t.amount, t.transaction_date
         FROM transactions t
-        JOIN categories c ON c.id = t.category_id
-        WHERE c.name = 'Uncategorized' {year_filter}
+        WHERE t.category_id IS NULL {year_filter}
         ORDER BY t.amount DESC
         LIMIT 30
     """, params).fetchall()
@@ -97,8 +97,7 @@ def report(year: int = None):
             print(f"  ${r['amount']:>8.2f}  {r['transaction_date']}  {r['merchant_normalized']}")
         n_total = conn.execute(f"""
             SELECT COUNT(*) FROM transactions t
-            JOIN categories c ON c.id = t.category_id
-            WHERE c.name = 'Uncategorized' {year_filter}
+            WHERE t.category_id IS NULL {year_filter}
         """, params).fetchone()[0]
         if n_total > 30:
             print(f"  ... and {n_total - 30} more")
