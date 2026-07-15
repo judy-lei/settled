@@ -123,10 +123,11 @@ def check_write_path() -> None:
     category=None, not the string 'Uncategorized'. These assertions are the
     root-cause fix for P-01 — they prevent the fixture/pipeline divergence
     that let the bug survive undetected."""
+    _unmatched = categorize("UNKNOWN MERCHANT XYZ", rules=[])
     check("write path: unmatched merchant → None",
-          categorize("UNKNOWN MERCHANT XYZ", rules=[])["category"], None)
+          _unmatched["category"], None)
     check("write path: unmatched merchant category_source",
-          categorize("UNKNOWN MERCHANT XYZ", rules=[])["category_source"], "none")
+          _unmatched["category_source"], "none")
     check("write path: WS 'miscellaneous' → None",
           map_wealthsimple_category("miscellaneous"), None)
     check("write path: WS 'rent' → None",
@@ -142,6 +143,21 @@ def check_write_path() -> None:
           map_wealthsimple_category("groceries"), "Groceries")
 
 
+def check_report_queries(conn: sqlite3.Connection) -> None:
+    """CR-1 regression: report.py TOTAL must include NULL-category rows.
+    Pre-fix, the INNER JOIN in SPEND_FILTER silently dropped them."""
+    signed = "CASE WHEN t.direction='credit' THEN -t.amount ELSE t.amount END"
+    total = conn.execute(f"""
+        SELECT ROUND(SUM({signed}), 2)
+        FROM transactions t
+        WHERE t.transaction_type NOT IN ('payment', 'transfer')
+          AND t.duplicate_status != 'confirmed_duplicate'
+          AND substr(t.transaction_date, 1, 7) = '2026-06'
+    """).fetchone()[0]
+    check("CR-1 report total includes uncategorized ($370 + T14+T15+T16 = $478)",
+          _money(total), _money(fx.JUNE_REPORT_TOTAL_SPEND))
+
+
 def main() -> int:
     check_write_path()
     rebuild_fixture()
@@ -150,6 +166,7 @@ def main() -> int:
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         run_checks(conn)
+        check_report_queries(conn)
     finally:
         conn.close()
 

@@ -131,7 +131,7 @@ def categorize(merchant_normalized: str, rules: list, source_category: str = Non
                 transaction_type: str = None) -> dict:
     """
     Apply the full precedence: payment short-circuit -> merchant rule ->
-    source category -> uncategorized.
+    source category -> None.
     `rules` is the current merchant rules list (from schema.get_merchant_rules()).
     `source_category` should already be mapped to our taxonomy by the caller
     (parsers.py) before being passed in here, or None if unavailable.

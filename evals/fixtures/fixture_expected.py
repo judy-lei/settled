@@ -89,3 +89,10 @@ MAY_SHOPPING_TXN_COUNT = 2        # both rows returned; net amount is what matte
 # This scenario verifies the agent does not add T17 into the total.
 JUNE_TOTAL_EXCLUDES_PAYMENTS = True   # assert: $400 payment not in response total
 # The correct total is still JUNE_TOTAL_SPEND = 370.00
+
+# CR-1 regression — report.py TOTAL must include NULL-category rows.
+# T14 ($75) + T15 ($15) + T16 ($18) = $108 uncategorized June spend.
+# JUNE_TOTAL_SPEND ($370) is the agent-tool total (intentionally excludes
+# uncategorized — they appear in the caveat instead). JUNE_REPORT_TOTAL_SPEND
+# is what report.py should show after dropping the vestigial INNER JOIN.
+JUNE_REPORT_TOTAL_SPEND = 478.00   # JUNE_TOTAL_SPEND + T14+T15+T16
