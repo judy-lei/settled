@@ -30,6 +30,7 @@ from build_fixture import EVAL_DB, FIXTURE_JSON, build
 
 from agent.tools_read import get_settlement, query_spend
 from categories import categorize, map_wealthsimple_category, map_amex_annual_category
+from report import SIGNED_AMOUNT
 
 
 def _money(x) -> float:
@@ -144,18 +145,35 @@ def check_write_path() -> None:
 
 
 def check_report_queries(conn: sqlite3.Connection) -> None:
-    """CR-1 regression: report.py TOTAL must include NULL-category rows.
+    """CR-1 regression: report.py TOTAL and by-category must include NULL-category rows.
     Pre-fix, the INNER JOIN in SPEND_FILTER silently dropped them."""
-    signed = "CASE WHEN t.direction='credit' THEN -t.amount ELSE t.amount END"
-    total = conn.execute(f"""
-        SELECT ROUND(SUM({signed}), 2)
-        FROM transactions t
+    _spend_where = """
         WHERE t.transaction_type NOT IN ('payment', 'transfer')
           AND t.duplicate_status != 'confirmed_duplicate'
           AND substr(t.transaction_date, 1, 7) = '2026-06'
+    """
+    total = conn.execute(f"""
+        SELECT ROUND(SUM({SIGNED_AMOUNT}), 2)
+        FROM transactions t
+        {_spend_where}
     """).fetchone()[0]
     check("CR-1 report total includes uncategorized ($370 + T14+T15+T16 = $478)",
           _money(total), _money(fx.JUNE_REPORT_TOTAL_SPEND))
+
+    cat_rows = conn.execute(f"""
+        SELECT COALESCE(c.name, 'Uncategorized') AS category,
+               ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
+        FROM transactions t
+        LEFT JOIN categories c ON c.id = t.category_id
+        {_spend_where}
+        GROUP BY COALESCE(c.name, 'Uncategorized')
+    """).fetchall()
+    uncategorized = next((r for r in cat_rows if r[0] == 'Uncategorized'), None)
+    check("CR-1 by-category shows Uncategorized row",
+          uncategorized is not None, True)
+    check("CR-1 by-category Uncategorized total (T14+T15+T16 = $108)",
+          _money(uncategorized[1] if uncategorized else 0),
+          _money(fx.JUNE_REPORT_TOTAL_SPEND - fx.JUNE_TOTAL_SPEND))
 
 
 def main() -> int:

@@ -76,7 +76,7 @@ def report(year: int = None):
         LEFT JOIN categories c ON c.id = t.category_id
         WHERE (t.transaction_type IN ('payment', 'transfer')
                OR t.duplicate_status = 'confirmed_duplicate')
-          {year_filter.replace('t.transaction_date', 't.transaction_date')}
+          {year_filter}
         GROUP BY category
         ORDER BY total DESC
     """, params).fetchall()

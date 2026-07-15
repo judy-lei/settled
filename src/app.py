@@ -22,7 +22,7 @@ def get_categories(conn) -> list[str]:
         st.session_state["custom_categories"] = []
     db_cats = [r[0] for r in conn.execute("""
         SELECT name FROM categories
-        WHERE name NOT IN ('Payment')
+        WHERE name NOT IN ('Payment', 'Uncategorized')
         ORDER BY name
     """)]
     return sorted(set(db_cats) | set(st.session_state["custom_categories"]))
