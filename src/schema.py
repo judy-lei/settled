@@ -8,7 +8,9 @@ Safe to run on a fresh DB only. Existing databases must use migrate_v2.py.
 """
 
 import json
+import os
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +58,22 @@ def load_seed_config() -> dict:
         )
     with open(SEED_CONFIG_PATH) as f:
         return json.load(f)
+
+
+def _save_seed_config(config: dict) -> None:
+    """Atomically overwrite seed_config.json (temp file + os.replace).
+    Leaves no orphaned temp file if the write or replace fails."""
+    dir_ = SEED_CONFIG_PATH.parent
+    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, SEED_CONFIG_PATH)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def get_conn() -> sqlite3.Connection:
@@ -232,6 +250,42 @@ def seed_merchant_rules(conn: sqlite3.Connection, seed_rules: list[tuple[str, st
     conn.commit()
 
 
+def seed_user_corrections(conn: sqlite3.Connection, corrections: list[tuple[str, str]]) -> None:
+    """Upsert user correction rules — runs every init, overrides seed rules."""
+    if not corrections:
+        return
+    categories = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
+    unknown = [c for _p, c in corrections if c not in categories]
+    if unknown:
+        print(f"WARNING: seed_user_corrections: skipped {len(unknown)} correction(s) with unknown categories: {unknown}")
+    now = datetime.now(timezone.utc).isoformat()
+    conn.executemany("""
+        INSERT INTO merchant_rules (pattern, category_id, source, created_at)
+        VALUES (?, ?, 'user_correction', ?)
+        ON CONFLICT(pattern) DO UPDATE SET
+            category_id = excluded.category_id,
+            source = 'user_correction',
+            created_at = excluded.created_at
+    """, [(p, categories[c], now) for p, c in corrections if c in categories])
+    conn.commit()
+
+
+def export_user_corrections(conn: sqlite3.Connection) -> int:
+    """Write all user_correction rules from DB into seed_config.json; returns count written."""
+    rows = conn.execute("""
+        SELECT mr.pattern, c.name
+        FROM merchant_rules mr
+        JOIN categories c ON c.id = mr.category_id
+        WHERE mr.source = 'user_correction'
+        ORDER BY mr.pattern
+    """).fetchall()
+    corrections = [[r["pattern"], r["name"]] for r in rows]
+    config = load_seed_config()
+    config["user_corrections"] = corrections
+    _save_seed_config(config)
+    return len(corrections)
+
+
 def get_merchant_rules(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     """Returns (pattern, category_name) tuples, newest-first."""
     rows = conn.execute("""
@@ -372,9 +426,27 @@ def add_merchant_rule(conn: sqlite3.Connection, pattern: str, category_name: str
     conn.execute("""
         INSERT INTO merchant_rules (pattern, category_id, source, created_at)
         VALUES (?, ?, 'user_correction', ?)
-        ON CONFLICT(pattern) DO UPDATE SET category_id = excluded.category_id, created_at = excluded.created_at
+        ON CONFLICT(pattern) DO UPDATE SET
+            category_id = excluded.category_id,
+            source = 'user_correction',
+            created_at = excluded.created_at
     """, (pattern, category_id["id"], now))
+    _write_correction_to_config(pattern, category_name)
     conn.commit()
+
+
+def _write_correction_to_config(pattern: str, category_name: str) -> None:
+    """Persist a user correction to seed_config.json so it survives a DB rebuild."""
+    config = load_seed_config()
+    corrections: list[list[str]] = config.setdefault("user_corrections", [])
+    # Update in place if pattern already present, otherwise append.
+    for entry in corrections:
+        if entry[0] == pattern:
+            entry[1] = category_name
+            break
+    else:
+        corrections.append([pattern, category_name])
+    _save_seed_config(config)
 
 
 if __name__ == "__main__":
@@ -386,6 +458,7 @@ if __name__ == "__main__":
     seed_category_splits(conn)
     config = load_seed_config()
     seed_merchant_rules(conn, [tuple(r) for r in config.get("merchant_rules", [])])
+    seed_user_corrections(conn, [tuple(r) for r in config.get("user_corrections", [])])
     print("DB initialized:", DB_PATH)
     print("Users:", users)
     print("Accounts:", len(accounts), "accounts")

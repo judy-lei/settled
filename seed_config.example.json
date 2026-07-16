@@ -16,5 +16,8 @@
     ["NETFLIX", "Subscriptions"],
     ["COSTCO", "Groceries"],
     ["UBER TRIP", "Transport"]
+  ],
+  "user_corrections": [
+    ["LOCAL DELI", "Eating Out"]
   ]
 }

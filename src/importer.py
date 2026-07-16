@@ -21,8 +21,8 @@ import pandas as pd
 
 from schema import (get_conn, init_db, load_seed_config, seed_users,
                     seed_accounts, seed_categories, seed_category_splits,
-                    seed_merchant_rules, get_merchant_rules,
-                    SETTLEMENT_EXCLUDED_TYPES)
+                    seed_merchant_rules, seed_user_corrections,
+                    get_merchant_rules, SETTLEMENT_EXCLUDED_TYPES)
 from parsers import PARSERS
 from categories import categorize, SEED_MERCHANT_RULES
 
@@ -41,15 +41,17 @@ def sha256_file(path: Path) -> str:
 
 def load_import_registry() -> tuple:
     """User's statement files are local data, never hardcoded in source.
-    Returns (known_sources, statement_totals) in the shapes the importer uses."""
-    entries = load_seed_config().get("import_files", [])
+    Returns (known_sources, statement_totals, user_corrections) in the shapes the importer uses."""
+    cfg = load_seed_config()
+    entries = cfg.get("import_files", [])
     known_sources = {e["filename"]: (e["account_key"], e["source_format"]) for e in entries}
     statement_totals = {e["filename"]: e["statement_total"]
                         for e in entries if e.get("statement_total") is not None}
-    return known_sources, statement_totals
+    user_corrections = [tuple(r) for r in cfg.get("user_corrections", [])]
+    return known_sources, statement_totals, user_corrections
 
 
-KNOWN_SOURCES, STATEMENT_TOTALS = load_import_registry()
+KNOWN_SOURCES, STATEMENT_TOTALS, USER_CORRECTIONS = load_import_registry()
 
 
 def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list) -> dict:
@@ -130,6 +132,7 @@ def main():
     seed_categories(conn)
     seed_category_splits(conn)
     seed_merchant_rules(conn, SEED_MERCHANT_RULES)
+    seed_user_corrections(conn, USER_CORRECTIONS)
     rules = get_merchant_rules(conn)
 
     print("Importing known sources...\n")
