@@ -30,7 +30,7 @@ from build_fixture import EVAL_DB, FIXTURE_JSON, build
 
 from agent.tools_read import get_settlement, query_spend
 from categories import categorize, map_wealthsimple_category, map_amex_annual_category
-from report import spend_by_category, spend_total
+from report import spend_by_category, spend_by_payer, spend_total
 
 
 def _money(x) -> float:
@@ -165,6 +165,26 @@ def check_report_queries(conn: sqlite3.Connection) -> None:
     check("CR-1 by-category Uncategorized total (T14+T15+T16 = $108)",
           _money(uncategorized["total"] if uncategorized else 0),
           _money(fx.JUNE_REPORT_TOTAL_SPEND - fx.JUNE_TOTAL_SPEND))
+
+    # HARDEN-1 read-site audit: by-payer is the same spend surface grouped by
+    # owner, so it must reconcile to the by-category total. Lock it against
+    # hand-computed per-payer figures AND assert the cross-grouping invariant,
+    # so a stale owner_id or a category JOIN creeping into by-payer goes red.
+    payer_rows = spend_by_payer(conn, period_filter, params)
+    by_payer = {r["payer"]: _money(r["total"]) for r in payer_rows}
+    check("by-payer surfaces exactly the two payers (none dropped)",
+          sorted(by_payer), sorted(fx.JUNE_REPORT_BY_PAYER))
+    for name, expected in fx.JUNE_REPORT_BY_PAYER.items():
+        check(f"by-payer {name} total (categorized + uncategorized)",
+              by_payer.get(name), _money(expected))
+    # Exact equality holds because every June fixture amount is whole dollars,
+    # so sum-of-rounded-per-group == round-of-sum. If an odd-cent row is ever
+    # added to the June fixture, expect this to need a ±1¢ tolerance (that would
+    # be the residual-cent rounding gap surfacing, not a by-payer regression).
+    check("reconcile: by-payer total == by-category total == spend_total",
+          (_money(sum(by_payer.values())),
+           _money(sum(r["total"] for r in cat_rows))),
+          (_money(total), _money(total)))
 
 
 def main() -> int:

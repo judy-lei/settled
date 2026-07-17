@@ -20,12 +20,20 @@ _SPEND_WHERE = """
 """
 
 
+# extra_where contract (all three functions below): a TRUSTED LITERAL SQL
+# fragment only — never a caller- or user-supplied string. Bind every value
+# through `params` (e.g. ":period"), never by interpolating it into extra_where.
+# Today's callers pass hardcoded year/month filters; this note keeps a future
+# caller (agent tools, a category filter) from turning it into injected SQL.
+
+
 def spend_by_category(conn, extra_where: str = "", params: dict = None) -> list:
     """Net spend per category, NULL-category rows included as 'Uncategorized'.
 
     Shared by report() and evals/check_tools.py's regression check — extra_where
     lets each caller scope the period (year vs. year-month) without duplicating
     the SPEND_WHERE / join / COALESCE logic that CR-1 broke once already.
+    extra_where must be a trusted literal (see contract note above).
     """
     params = params or {}
     return conn.execute(f"""
@@ -40,8 +48,31 @@ def spend_by_category(conn, extra_where: str = "", params: dict = None) -> list:
     """, params).fetchall()
 
 
+def spend_by_payer(conn, extra_where: str = "", params: dict = None) -> list:
+    """Net spend per payer (transaction owner), all qualifying rows included.
+
+    Same spend surface as spend_by_category(), grouped by owner instead of
+    category, so the two must reconcile to the same total. Extracted and shared
+    with the eval so this read site is locked the same way by-category is —
+    it was the un-asserted sibling query CR-1's fix left behind.
+    extra_where must be a trusted literal (see contract note above).
+    """
+    params = params or {}
+    return conn.execute(f"""
+        SELECT u.display_name AS payer,
+               COUNT(*) AS txns,
+               ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
+        FROM transactions t
+        JOIN users u ON t.owner_id = u.id
+        {_SPEND_WHERE} {extra_where}
+        GROUP BY u.display_name
+        ORDER BY total DESC
+    """, params).fetchall()
+
+
 def spend_total(conn, extra_where: str = "", params: dict = None) -> float:
-    """Net spend total, NULL-category rows included. See spend_by_category()."""
+    """Net spend total, NULL-category rows included. See spend_by_category().
+    extra_where must be a trusted literal (see contract note above)."""
     params = params or {}
     return conn.execute(f"""
         SELECT ROUND(SUM({SIGNED_AMOUNT}), 2)
@@ -71,17 +102,9 @@ def report(year: int = None):
 
     # By payer
     print("\n--- Spend by payer ---")
-    rows = conn.execute(f"""
-        SELECT u.display_name, COUNT(*) AS txns,
-               ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
-        FROM transactions t
-        JOIN users u ON t.owner_id = u.id
-        {_SPEND_WHERE} {year_filter}
-        GROUP BY u.display_name
-        ORDER BY total DESC
-    """, params).fetchall()
+    rows = spend_by_payer(conn, year_filter, params)
     for r in rows:
-        print(f"  {r['display_name']:<20} {r['txns']:>4} txns   ${r['total']:>10.2f}")
+        print(f"  {r['payer']:<20} {r['txns']:>4} txns   ${r['total']:>10.2f}")
 
     # Excluded: payments between own accounts and confirmed duplicates
     print("\n--- Excluded from spend (payments, confirmed duplicates) ---")

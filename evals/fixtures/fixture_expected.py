@@ -96,3 +96,12 @@ JUNE_TOTAL_EXCLUDES_PAYMENTS = True   # assert: $400 payment not in response tot
 # uncategorized — they appear in the caveat instead). JUNE_REPORT_TOTAL_SPEND
 # is what report.py should show after dropping the vestigial INNER JOIN.
 JUNE_REPORT_TOTAL_SPEND = 478.00   # JUNE_TOTAL_SPEND + T14+T15+T16
+
+# report.py by-payer (grouped by owner; includes uncategorized rows, unlike the
+# settlement 'paid' figure which is categorized-only). Must reconcile to
+# JUNE_REPORT_TOTAL_SPEND. Owners: uncategorized T14 ($75) + T16 ($18) are Alex,
+# T15 ($15) is Sam.
+#   Alex: 230 categorized (T08 150 + T12 30 + T13 50) +  93 uncat (T14 75 + T16 18) = 323.00
+#   Sam:  140 categorized (T09 100 + T10 22 + T11 18) +  15 uncat (T15 15)          = 155.00
+#   323 + 155 = 478 = JUNE_REPORT_TOTAL_SPEND
+JUNE_REPORT_BY_PAYER = {"Alex": 323.00, "Sam": 155.00}
