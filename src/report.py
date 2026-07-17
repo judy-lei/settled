@@ -20,6 +20,36 @@ _SPEND_WHERE = """
 """
 
 
+def spend_by_category(conn, extra_where: str = "", params: dict = None) -> list:
+    """Net spend per category, NULL-category rows included as 'Uncategorized'.
+
+    Shared by report() and evals/check_tools.py's regression check — extra_where
+    lets each caller scope the period (year vs. year-month) without duplicating
+    the SPEND_WHERE / join / COALESCE logic that CR-1 broke once already.
+    """
+    params = params or {}
+    return conn.execute(f"""
+        SELECT COALESCE(c.name, 'Uncategorized') AS category,
+               COUNT(*) AS txns,
+               ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
+        FROM transactions t
+        LEFT JOIN categories c ON c.id = t.category_id
+        {_SPEND_WHERE} {extra_where}
+        GROUP BY COALESCE(c.name, 'Uncategorized')
+        ORDER BY total DESC
+    """, params).fetchall()
+
+
+def spend_total(conn, extra_where: str = "", params: dict = None) -> float:
+    """Net spend total, NULL-category rows included. See spend_by_category()."""
+    params = params or {}
+    return conn.execute(f"""
+        SELECT ROUND(SUM({SIGNED_AMOUNT}), 2)
+        FROM transactions t
+        {_SPEND_WHERE} {extra_where}
+    """, params).fetchone()[0]
+
+
 def report(year: int = None):
     conn = get_conn()
     year_filter = "AND substr(t.transaction_date, 1, 4) = :year" if year else ""
@@ -32,24 +62,11 @@ def report(year: int = None):
 
     # By category
     print("\n--- Spend by category (net of refunds; excludes payments/transfers) ---")
-    rows = conn.execute(f"""
-        SELECT COALESCE(c.name, 'Uncategorized') AS category,
-               COUNT(*) AS txns,
-               ROUND(SUM({SIGNED_AMOUNT}), 2) AS total
-        FROM transactions t
-        LEFT JOIN categories c ON c.id = t.category_id
-        {_SPEND_WHERE} {year_filter}
-        GROUP BY COALESCE(c.name, 'Uncategorized')
-        ORDER BY total DESC
-    """, params).fetchall()
+    rows = spend_by_category(conn, year_filter, params)
     for r in rows:
         print(f"  {r['category']:<20} {r['txns']:>4} txns   ${r['total']:>10.2f}")
 
-    total = conn.execute(f"""
-        SELECT ROUND(SUM({SIGNED_AMOUNT}), 2)
-        FROM transactions t
-        {_SPEND_WHERE} {year_filter}
-    """, params).fetchone()[0]
+    total = spend_total(conn, year_filter, params)
     print(f"\n  {'TOTAL':<20}          ${(total or 0):>10.2f}")
 
     # By payer

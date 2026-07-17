@@ -357,5 +357,136 @@ class TestGetSettlementDataFilters(unittest.TestCase):
         self.assertAlmostEqual(s["amount"], 24.0)
 
 
+# ---------------------------------------------------------------------------
+# Integration tests — arithmetic paths only ever exercised via SQL, not
+# hand-fed to compute_settlement(). HARDEN-1: the unit tests above prove the
+# math is right given correct inputs; these prove get_settlement_data() itself
+# computes those inputs correctly for refunds, extreme splits, mixed splits,
+# and odd-cent amounts.
+# ---------------------------------------------------------------------------
+
+class TestSettlementArithmeticSQL(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = _setup_db()  # category 1 = Groceries, 50/50
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_refund_row_nets_via_sql(self):
+        # Alice: $100 Groceries purchase + a real direction='credit' $20 refund
+        # row (not a hand-fed net figure). Bob: $60 Groceries purchase.
+        # Expected net total = $140; fair_share each = $70 (50/50).
+        _insert_txn(self.conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=100.0, direction="debit", txn_type="purchase", category_id=1)
+        _insert_txn(self.conn, txn_id=2, owner_id=1, account_id=1,
+                    amount=20.0, direction="credit", txn_type="refund", category_id=1)
+        _insert_txn(self.conn, txn_id=3, owner_id=2, account_id=2,
+                    amount=60.0, direction="debit", txn_type="purchase", category_id=1)
+
+        data = get_settlement_data(self.conn, "2026-06")
+        result = compute_settlement(data)
+
+        alice = next(u for u in result["users"] if u["id"] == 1)
+        bob = next(u for u in result["users"] if u["id"] == 2)
+        self.assertAlmostEqual(alice["paid"], 80.0)   # 100 - 20
+        self.assertAlmostEqual(bob["paid"], 60.0)
+        self.assertAlmostEqual(data["total_spend"], 140.0)
+        self.assertAlmostEqual(alice["fair_share"], 70.0)
+        self.assertAlmostEqual(bob["fair_share"], 70.0)
+        self.assertAlmostEqual(sum(u["balance"] for u in result["users"]), 0.0, places=2)
+
+    def test_100_0_split_via_sql(self):
+        # A second spend category (Rental Property) split 100% Alice / 0% Bob.
+        # Bob pays the $80 rent charge himself; fair_share still lands 100% on
+        # Alice — the SQL join, not a hand-fed pct, must produce this.
+        self.conn.execute(
+            "INSERT INTO categories (id, name, type) VALUES (3, 'Rental Property', 'spend')"
+        )
+        self.conn.executemany(
+            "INSERT INTO category_splits (category_id, user_id, pct) VALUES (?, ?, ?)",
+            [(3, 1, 100.0), (3, 2, 0.0)],
+        )
+        self.conn.commit()
+        _insert_txn(self.conn, txn_id=1, owner_id=2, account_id=2,
+                    amount=80.0, direction="debit", txn_type="purchase", category_id=3)
+
+        data = get_settlement_data(self.conn, "2026-06")
+        result = compute_settlement(data)
+
+        alice = next(u for u in result["users"] if u["id"] == 1)
+        bob = next(u for u in result["users"] if u["id"] == 2)
+        self.assertAlmostEqual(alice["paid"], 0.0)
+        self.assertAlmostEqual(bob["paid"], 80.0)
+        self.assertAlmostEqual(alice["fair_share"], 80.0)
+        self.assertAlmostEqual(bob["fair_share"], 0.0)
+        self.assertAlmostEqual(alice["balance"], -80.0)  # owes the full amount
+        self.assertAlmostEqual(bob["balance"], 80.0)
+        s = result["settlement"]
+        self.assertEqual(s["from_user"]["display_name"], "Alice")
+        self.assertEqual(s["to_user"]["display_name"], "Bob")
+        self.assertAlmostEqual(s["amount"], 80.0)
+
+    def test_two_categories_different_splits_via_sql(self):
+        # Groceries (cat 1) stays 50/50. Rental Property (cat 3) is 70/30.
+        # Cross-category fair_share aggregation must sum both, not just one.
+        # Alice: $100 Groceries. Bob: $200 Rental Property.
+        # fair_share_Alice = 100*0.5 + 200*0.70 = 50 + 140 = 190
+        # fair_share_Bob   = 100*0.5 + 200*0.30 = 50 +  60 = 110  (190+110=300 ✓)
+        # paid_Alice = 100, paid_Bob = 200
+        # balance_Alice = 100 - 190 = -90 (owes)
+        # balance_Bob   = 200 - 110 = +90 (overpaid)
+        self.conn.execute(
+            "INSERT INTO categories (id, name, type) VALUES (3, 'Rental Property', 'spend')"
+        )
+        self.conn.executemany(
+            "INSERT INTO category_splits (category_id, user_id, pct) VALUES (?, ?, ?)",
+            [(3, 1, 70.0), (3, 2, 30.0)],
+        )
+        self.conn.commit()
+        _insert_txn(self.conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=100.0, direction="debit", txn_type="purchase", category_id=1)
+        _insert_txn(self.conn, txn_id=2, owner_id=2, account_id=2,
+                    amount=200.0, direction="debit", txn_type="purchase", category_id=3)
+
+        data = get_settlement_data(self.conn, "2026-06")
+        result = compute_settlement(data)
+
+        alice = next(u for u in result["users"] if u["id"] == 1)
+        bob = next(u for u in result["users"] if u["id"] == 2)
+        self.assertAlmostEqual(data["total_spend"], 300.0)
+        self.assertAlmostEqual(alice["fair_share"], 190.0)
+        self.assertAlmostEqual(bob["fair_share"], 110.0)
+        self.assertAlmostEqual(alice["balance"], -90.0)
+        self.assertAlmostEqual(bob["balance"], 90.0)
+        self.assertAlmostEqual(sum(u["balance"] for u in result["users"]), 0.0, places=2)
+
+    @unittest.expectedFailure
+    def test_odd_cent_amount_sum_to_zero_via_sql(self):
+        # $150.01 split 50/50: each user's fair_share is ROUND()ed independently
+        # in SQL, so both sides round UP to $75.01 (75.005 rounds away from
+        # zero) — $150.02 vs. a $150.01 total, a genuine 1-cent books-imbalance,
+        # not a floating-point artifact. This confirms the "OPEN DECISION" in
+        # working.md (tolerate ±$0.01 vs. deterministically assign the residual
+        # cent) is a live, reproduced gap, not a theoretical one — the decision
+        # is deferred for now, expected to land with P0-2 (settlements rebuild),
+        # which touches this exact computation. Do NOT remove this decorator to
+        # "fix" the test by loosening the tolerance — that would be silently
+        # picking the tolerate-±$0.01 policy without the decision being made.
+        # Remove it only once the residual-cent policy is actually decided and
+        # implemented, at which point this becomes a real regression lock.
+        _insert_txn(self.conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=150.01, direction="debit", txn_type="purchase", category_id=1)
+
+        data = get_settlement_data(self.conn, "2026-06")
+        result = compute_settlement(data)
+
+        self.assertAlmostEqual(data["total_spend"], 150.01)
+        self.assertAlmostEqual(
+            sum(u["balance"] for u in result["users"]), 0.0, places=2,
+            msg="Odd-cent split broke books-balance beyond the accepted 1-cent tolerance",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
