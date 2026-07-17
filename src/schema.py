@@ -254,6 +254,11 @@ def seed_user_corrections(conn: sqlite3.Connection, corrections: list[tuple[str,
     """Upsert user correction rules — runs every init, overrides seed rules."""
     if not corrections:
         return
+    malformed = [c for c in corrections if len(c) != 2]
+    if malformed:
+        print(f"WARNING: seed_user_corrections: skipped {len(malformed)} malformed correction(s) "
+              f"(expected [pattern, category]): {malformed}")
+    corrections = [c for c in corrections if len(c) == 2]
     categories = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM categories")}
     unknown = [c for _p, c in corrections if c not in categories]
     if unknown:
@@ -439,6 +444,16 @@ def _write_correction_to_config(pattern: str, category_name: str) -> None:
     """Persist a user correction to seed_config.json so it survives a DB rebuild."""
     config = load_seed_config()
     corrections: list[list[str]] = config.setdefault("user_corrections", [])
+    # Drop malformed (wrong-arity) entries before matching — seed_user_corrections()
+    # already treats them as dead weight (skipped with a warning), and matching
+    # against one here would risk entry[1] = ... on a too-short list (IndexError).
+    # This also self-heals a malformed entry the moment its pattern is corrected
+    # again through the normal flow, instead of leaving it as a permanent landmine.
+    malformed = [e for e in corrections if len(e) != 2]
+    if malformed:
+        print(f"WARNING: _write_correction_to_config: dropped {len(malformed)} "
+              f"malformed correction(s) from seed_config.json: {malformed}")
+    corrections[:] = [e for e in corrections if len(e) == 2]
     # Update in place if pattern already present, otherwise append.
     for entry in corrections:
         if entry[0] == pattern:

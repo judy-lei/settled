@@ -53,9 +53,9 @@ def _rule(conn, pattern):
     return (row["category"], row["source"]) if row else None
 
 
-class TestUserCorrectionRoundTrip(unittest.TestCase):
-    """A correction made in the live DB must reappear, intact, in a DB rebuilt
-    from config alone — the whole point of DATA-1."""
+class _RedirectsSeedConfig(unittest.TestCase):
+    """Shared fixture: redirects schema.SEED_CONFIG_PATH to a temp file so the
+    real household config (data/seed_config.json) is never touched by a test."""
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
@@ -70,6 +70,11 @@ class TestUserCorrectionRoundTrip(unittest.TestCase):
 
     def _corrections_in_config(self):
         return json.loads(self._cfg_path.read_text())["user_corrections"]
+
+
+class TestUserCorrectionRoundTrip(_RedirectsSeedConfig):
+    """A correction made in the live DB must reappear, intact, in a DB rebuilt
+    from config alone — the whole point of DATA-1."""
 
     def test_new_correction_survives_rebuild(self):
         # 1. User corrects a merchant in the live DB.
@@ -141,6 +146,47 @@ class TestUserCorrectionRoundTrip(unittest.TestCase):
         self.assertEqual(_rule(conn2, "BLUE BOTTLE"), ("Eating Out", "user_correction"))
         self.assertEqual(_rule(conn2, "AISLE 5"), ("Groceries", "user_correction"))
         self.assertIsNone(_rule(conn2, "NETFLIX"))
+
+
+class TestMalformedConfigRobustness(_RedirectsSeedConfig):
+    """DATA-1 code-review finding #3: a hand-edited seed_config.json with a
+    malformed user_corrections entry (wrong arity) must skip that row with a
+    warning, not crash the importer — same pattern already used for unknown
+    categories in seed_user_corrections()."""
+
+    def test_malformed_entries_skipped_valid_entries_still_applied(self):
+        conn = _fresh_db()
+        corrections = [
+            ("WHOLE FOODS",),                       # 1-element: missing category
+            ("SQUARE COFFEE", "Eating Out", "extra"),  # 3-element: stray field
+            ("COSTCO", "Groceries"),                 # well-formed — must still apply
+        ]
+        seed_user_corrections(conn, corrections)
+
+        self.assertEqual(_rule(conn, "COSTCO"), ("Groceries", "user_correction"))
+        self.assertIsNone(_rule(conn, "WHOLE FOODS"))
+        self.assertIsNone(_rule(conn, "SQUARE COFFEE"))
+
+    def test_all_malformed_does_not_crash(self):
+        conn = _fresh_db()
+        # Must not raise — this is the exact crash finding #3 describes.
+        seed_user_corrections(conn, [("ONLY-PATTERN",)])
+        self.assertIsNone(_rule(conn, "ONLY-PATTERN"))
+
+    def test_recorrecting_a_malformed_pattern_does_not_crash(self):
+        # Code-review catch: seed_user_corrections() skips a malformed entry
+        # but leaves it sitting in the config file. If the user later corrects
+        # that same merchant through the normal flow, _write_correction_to_config()
+        # must not crash trying to write into the malformed entry's missing slot.
+        self._cfg_path.write_text(json.dumps({"user_corrections": [["WHOLE FOODS"]]}))
+        conn = _fresh_db()
+
+        add_merchant_rule(conn, "WHOLE FOODS", "Groceries")  # must not raise
+
+        self.assertEqual(_rule(conn, "WHOLE FOODS"), ("Groceries", "user_correction"))
+        self.assertEqual(
+            self._corrections_in_config(), [["WHOLE FOODS", "Groceries"]]
+        )  # malformed entry replaced, not left stranded alongside the fix
 
 
 if __name__ == "__main__":
