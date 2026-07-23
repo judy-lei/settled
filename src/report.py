@@ -14,10 +14,14 @@ SIGNED_AMOUNT = "CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount E
 # no confirmed duplicates. No JOIN to categories — NULL-category (uncategorized)
 # rows are spend and belong in totals. Use LEFT JOIN + COALESCE in by-category
 # queries so they appear as 'Uncategorized' rather than being silently dropped.
-_SPEND_WHERE = """
-    WHERE t.transaction_type NOT IN ('payment', 'transfer')
+# The spend-qualifying predicate, defined once. _SPEND_WHERE prefixes WHERE for
+# the report queries; get_review_metrics reuses the bare predicate so the review
+# metrics can never drift from what the report counts as spend (the CR-1 class).
+_SPEND_PREDICATE = """
+    t.transaction_type NOT IN ('payment', 'transfer')
       AND t.duplicate_status != 'confirmed_duplicate'
 """
+_SPEND_WHERE = f"WHERE {_SPEND_PREDICATE}"
 
 
 # extra_where contract (all three functions below): a TRUSTED LITERAL SQL
@@ -79,6 +83,102 @@ def spend_total(conn, extra_where: str = "", params: dict = None) -> float:
         FROM transactions t
         {_SPEND_WHERE} {extra_where}
     """, params).fetchone()[0]
+
+
+def _rate(num: int, denom: int):
+    """Fraction 0.0-1.0, or 'n/a' when the denominator is zero (no crash, no
+    misleading 0%)."""
+    return round(num / denom, 4) if denom else "n/a"
+
+
+def get_review_metrics(conn, period: str) -> dict:
+    """Review metrics for a YYYY-MM period — the ONE place they are defined.
+
+    Both the review screen and any readout call this; nothing re-derives the
+    numbers inline. All metrics scope to qualifying rows: real charges/refunds
+    (no payments or transfers), no confirmed duplicates, in the given month.
+
+    Returns:
+      total                    qualifying rows in the period
+      uncategorized            qualifying rows with NULL category
+      uncategorized_rate       uncategorized / total, or 'n/a'
+      reviewed                 qualifying rows marked reviewed
+      confirmed                reviewed with no correction (reviewed - corrected)
+      corrected                distinct qualifying rows with >=1 correction
+      miscategorization_rate   auto-categorized rows later corrected /
+                               all rows auto-categorized (still-auto + corrected),
+                               or 'n/a'
+      miscategorization_by_source
+                               same, split by the source that got it wrong
+                               ('merchant_rule' vs 'source_mapped') — different
+                               fixes (a rule edit vs a source-map edit)
+
+    The miscategorization denominator reconstructs "how many rows the auto-
+    categorizer produced" from still-auto rows plus corrected rows, using
+    category_changes.old_category_source — which is why that column is captured
+    before apply_correction() overwrites category_source to 'user_manual'.
+    """
+    q = f"{_SPEND_PREDICATE} AND substr(t.transaction_date, 1, 7) = :period"
+    p = {"period": period}
+
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM transactions t WHERE {q}", p
+    ).fetchone()[0]
+    uncategorized = conn.execute(
+        f"SELECT COUNT(*) FROM transactions t WHERE {q} AND t.category_id IS NULL", p
+    ).fetchone()[0]
+    reviewed = conn.execute(
+        f"SELECT COUNT(*) FROM transactions t WHERE {q} AND t.review_status = 'reviewed'", p
+    ).fetchone()[0]
+    corrected = conn.execute(f"""
+        SELECT COUNT(DISTINCT t.id) FROM transactions t
+        JOIN category_changes cc ON cc.transaction_id = t.id
+        WHERE {q}
+    """, p).fetchone()[0]
+
+    def still_auto(source: str) -> int:
+        """Rows still carrying an auto category_source (not yet corrected)."""
+        return conn.execute(
+            f"SELECT COUNT(*) FROM transactions t WHERE {q} AND t.category_source = :source",
+            {**p, "source": source},
+        ).fetchone()[0]
+
+    def corrected_from(source: str) -> int:
+        """Distinct rows whose category was auto-set by `source` and later
+        corrected — identified by a trail row with that old_category_source.
+        (Only a first correction carries an auto old source; later corrections
+        record 'user_manual', so this never double-counts.)"""
+        return conn.execute(f"""
+            SELECT COUNT(DISTINCT t.id) FROM transactions t
+            JOIN category_changes cc ON cc.transaction_id = t.id
+            WHERE {q} AND cc.old_category_source = :source
+        """, {**p, "source": source}).fetchone()[0]
+
+    by_source = {}
+    total_errors = 0
+    total_denom = 0
+    for source in ("merchant_rule", "source_mapped"):
+        errors = corrected_from(source)
+        denom = still_auto(source) + errors
+        by_source[source] = {
+            "errors": errors,
+            "denominator": denom,
+            "rate": _rate(errors, denom),
+        }
+        total_errors += errors
+        total_denom += denom
+
+    return {
+        "period": period,
+        "total": total,
+        "uncategorized": uncategorized,
+        "uncategorized_rate": _rate(uncategorized, total),
+        "reviewed": reviewed,
+        "confirmed": reviewed - corrected,
+        "corrected": corrected,
+        "miscategorization_rate": _rate(total_errors, total_denom),
+        "miscategorization_by_source": by_source,
+    }
 
 
 def report(year: int = None):
