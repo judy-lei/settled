@@ -24,7 +24,7 @@ from schema import (get_conn, init_db, load_seed_config, seed_users,
                     seed_merchant_rules, seed_user_corrections,
                     get_merchant_rules, SETTLEMENT_EXCLUDED_TYPES)
 from parsers import PARSERS
-from categories import categorize, SEED_MERCHANT_RULES
+from categories import categorize, blanked_at_import, SEED_MERCHANT_RULES
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -84,6 +84,11 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
         cat = categorize(r["merchant_normalized"], rules, r.get("source_category_mapped"),
                           r.get("transaction_type"))
         category_id = categories.get(cat["category"])
+        # Durable "the rules left this blank" marker, stamped once here via the
+        # shared rule (keyed on category_source 'none', not on category_id being
+        # NULL — so a future source-map pointing at a missing category surfaces as
+        # its own bug rather than hiding as a "blank").
+        uncategorized_at_import = blanked_at_import(cat["category_source"])
         rows.append((
             import_file_id, account_id, owner_id,
             r["merchant_raw"], r["merchant_normalized"],
@@ -91,7 +96,7 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
             r["posted_date"].strftime("%Y-%m-%d") if pd.notna(r["posted_date"]) else None,
             float(r["amount"]), r["currency"], r["direction"], r["transaction_type"],
             r.get("source_category_mapped"),
-            category_id, cat["category_source"],
+            category_id, cat["category_source"], uncategorized_at_import,
             "unreviewed",
         ))
 
@@ -99,8 +104,9 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
         INSERT INTO transactions (
             import_file_id, account_id, owner_id, merchant_raw, merchant_normalized,
             transaction_date, posted_date, amount, currency, direction, transaction_type,
-            source_category_raw, category_id, category_source, review_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_category_raw, category_id, category_source, uncategorized_at_import,
+            review_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
     conn.commit()
 

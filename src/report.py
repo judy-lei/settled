@@ -100,8 +100,13 @@ def get_review_metrics(conn, period: str) -> dict:
 
     Returns:
       total                    qualifying rows in the period
-      uncategorized            qualifying rows with NULL category
+      uncategorized            qualifying rows STILL blank (NULL category) — work
+                               remaining; drops to 0 as blanks get filled in
       uncategorized_rate       uncategorized / total, or 'n/a'
+      blanked_by_rules         qualifying rows the rules left blank AT IMPORT
+                               (uncategorized_at_import = 1) — durable, unaffected
+                               by later filling-in; this is the rule-quality metric
+      blanked_by_rules_rate    blanked_by_rules / total, or 'n/a'
       reviewed                 qualifying rows marked reviewed
       confirmed                reviewed with no correction (reviewed - corrected)
       corrected                distinct qualifying rows with >=1 correction
@@ -126,6 +131,9 @@ def get_review_metrics(conn, period: str) -> dict:
     ).fetchone()[0]
     uncategorized = conn.execute(
         f"SELECT COUNT(*) FROM transactions t WHERE {q} AND t.category_id IS NULL", p
+    ).fetchone()[0]
+    blanked_by_rules = conn.execute(
+        f"SELECT COUNT(*) FROM transactions t WHERE {q} AND t.uncategorized_at_import = 1", p
     ).fetchone()[0]
     reviewed = conn.execute(
         f"SELECT COUNT(*) FROM transactions t WHERE {q} AND t.review_status = 'reviewed'", p
@@ -173,6 +181,8 @@ def get_review_metrics(conn, period: str) -> dict:
         "total": total,
         "uncategorized": uncategorized,
         "uncategorized_rate": _rate(uncategorized, total),
+        "blanked_by_rules": blanked_by_rules,
+        "blanked_by_rules_rate": _rate(blanked_by_rules, total),
         "reviewed": reviewed,
         "confirmed": reviewed - corrected,
         "corrected": corrected,

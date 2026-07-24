@@ -30,7 +30,7 @@ from build_fixture import EVAL_DB, FIXTURE_JSON, build
 
 from agent.tools_read import get_settlement, query_spend
 from categories import categorize, map_wealthsimple_category, map_amex_annual_category
-from report import spend_by_category, spend_by_payer, spend_total
+from report import get_review_metrics, spend_by_category, spend_by_payer, spend_total
 
 
 def _money(x) -> float:
@@ -185,6 +185,17 @@ def check_report_queries(conn: sqlite3.Connection) -> None:
           (_money(sum(by_payer.values())),
            _money(sum(r["total"] for r in cat_rows))),
           (_money(total), _money(total)))
+
+    # uncategorized_at_import lock: the freshly built fixture has had no review
+    # pass, so every still-blank row is exactly a row the rules blanked at import.
+    # The durable marker (blanked_by_rules) must equal the live NULL-category
+    # count AND the hand-counted June blanks (T14, T15, T16) — catches the
+    # importer/fixture failing to stamp the marker.
+    m = get_review_metrics(conn, "2026-06")
+    check("blanked_by_rules == live uncategorized (no review done yet)",
+          m["blanked_by_rules"], m["uncategorized"])
+    check("blanked_by_rules == hand-counted June blanks (T14, T15, T16)",
+          m["blanked_by_rules"], 3)
 
 
 def main() -> int:

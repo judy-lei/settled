@@ -17,6 +17,7 @@ FIXTURE_JSON = FIXTURE_DIR / "fixture_transactions.json"
 EVAL_DB = FIXTURE_DIR / "eval.db"
 
 sys.path.insert(0, str(FIXTURE_DIR.parent.parent / "src"))
+from categories import blanked_at_import
 from schema import init_db
 
 
@@ -95,14 +96,18 @@ def build(conn: sqlite3.Connection, data: dict) -> None:
         category_id = category_ids[t["category"]] if t["category"] else None
         import_file_id = import_file_ids[t["import_file"]]
 
+        # Stamp uncategorized_at_import via the SAME shared rule the importer
+        # uses, so the fixture reflects the real import-time marker and cannot
+        # drift from it.
+        uncategorized_at_import = blanked_at_import(t["category_source"])
         cur = conn.execute(
             """INSERT INTO transactions
                (import_file_id, account_id, owner_id,
                 merchant_raw, merchant_normalized,
                 transaction_date, amount, direction, transaction_type,
                 source_category_raw, category_id, category_source,
-                review_status, duplicate_status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unreviewed', ?)
+                uncategorized_at_import, review_status, duplicate_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unreviewed', ?)
                RETURNING id""",
             (
                 import_file_id,
@@ -117,6 +122,7 @@ def build(conn: sqlite3.Connection, data: dict) -> None:
                 t.get("source_category_raw"),
                 category_id,
                 t["category_source"],
+                uncategorized_at_import,
                 t["duplicate_status"],
             ),
         )

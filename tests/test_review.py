@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import schema
 from schema import init_db
+from categories import blanked_at_import
 from review import apply_correction, confirm_reviewed
 from report import get_review_metrics
 
@@ -65,16 +66,29 @@ def _setup_db():
 
 def _insert_txn(conn, tid, *, category_id, source, merchant="MERCH",
                 review="unreviewed", ttype="purchase", amount=10.0,
-                direction="debit", dup="unique", period=PERIOD):
+                direction="debit", dup="unique", period=PERIOD, blank=0):
     conn.execute("""
         INSERT INTO transactions
             (id, import_file_id, account_id, owner_id,
              merchant_raw, merchant_normalized, transaction_date,
              amount, direction, transaction_type,
-             category_id, category_source, review_status, duplicate_status)
-        VALUES (?, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             category_id, category_source, uncategorized_at_import,
+             review_status, duplicate_status)
+        VALUES (?, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (tid, merchant, merchant, f"{period}-15",
-          amount, direction, ttype, category_id, source, review, dup))
+          amount, direction, ttype, category_id, source, blank, review, dup))
+    conn.commit()
+
+
+def _assign_blank(conn, tid, category_name):
+    """Replicate what the Uncategorized tab does on Apply (app.py): set the
+    category, mark reviewed, flip source to user_manual. Deliberately does NOT
+    touch uncategorized_at_import — that's the behavior under test."""
+    cat_id = conn.execute(
+        "SELECT id FROM categories WHERE name = ?", (category_name,)).fetchone()["id"]
+    conn.execute(
+        "UPDATE transactions SET category_id = ?, category_source = 'user_manual', "
+        "review_status = 'reviewed' WHERE id = ?", (cat_id, tid))
     conn.commit()
 
 
@@ -305,6 +319,67 @@ class TestMetrics(_RedirectsSeedConfig):
         m = get_review_metrics(self.conn, PERIOD)
         self.assertEqual(m["total"], 2)
         self.assertEqual(m["miscategorization_rate"], "n/a")
+
+
+class TestBlankMarker(_RedirectsSeedConfig):
+    """uncategorized_at_import — the durable 'rules left this blank' record.
+
+    The whole point is that it survives the blank being filled in, so the
+    'blanked_by_rules' rate stays computable after a review pass has erased the
+    live NULL-category signal. Mirror of the miscat-denominator lock, one metric
+    over: filling a blank must not shrink blanked_by_rules the way it would if the
+    metric read the live category state.
+    """
+
+    def test_marker_survives_filling_the_blank(self):
+        # THE headline test. A row the rules blanked (marker=1). Fill it in via
+        # the Uncategorized-tab path. The marker must stay 1 and blanked_by_rules
+        # must NOT drop to 0 — that is exactly what a live category_id read would
+        # do, and why the durable column exists.
+        _insert_txn(self.conn, 1, category_id=None, source="none", blank=1)
+        before = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(before["blanked_by_rules"], 1)
+        self.assertEqual(before["uncategorized"], 1)          # live: still blank
+
+        _assign_blank(self.conn, 1, "Shopping")
+
+        after = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(_txn(self.conn, 1)["uncategorized_at_import"], 1)  # untouched
+        self.assertEqual(after["blanked_by_rules"], 1)        # durable: still counts
+        self.assertEqual(after["blanked_by_rules_rate"], 1.0)
+        self.assertEqual(after["uncategorized"], 0)           # live: no longer blank
+
+    def test_marker_not_set_for_auto_categorized_rows(self):
+        # A row the rules DID categorize is not "blanked by rules", and staying
+        # correct after a correction is part of the contract.
+        _insert_txn(self.conn, 1, category_id=1, source="merchant_rule", blank=0)
+        apply_correction(self.conn, [1], "Eating Out")
+        self.assertEqual(_txn(self.conn, 1)["uncategorized_at_import"], 0)  # untouched
+        m = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(m["blanked_by_rules"], 0)
+
+    def test_blanked_by_rules_rate(self):
+        # Two blanked (marker 1), two auto (marker 0) -> 2/4.
+        _insert_txn(self.conn, 1, category_id=None, source="none", blank=1, merchant="A")
+        _insert_txn(self.conn, 2, category_id=None, source="none", blank=1, merchant="B")
+        _insert_txn(self.conn, 3, category_id=1, source="merchant_rule", merchant="C")
+        _insert_txn(self.conn, 4, category_id=1, source="source_mapped", merchant="D")
+        m = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(m["blanked_by_rules"], 2)
+        self.assertEqual(m["blanked_by_rules_rate"], 0.5)
+
+    def test_blanked_by_rules_na_on_empty_month(self):
+        m = get_review_metrics(self.conn, "2020-01")
+        self.assertEqual(m["blanked_by_rules"], 0)
+        self.assertEqual(m["blanked_by_rules_rate"], "n/a")
+
+    def test_blanked_at_import_rule(self):
+        # The single shared rule the importer AND the fixture builder stamp with.
+        # Only 'none' (the categorizer had no opinion) is a blank; every assigned
+        # source is not.
+        self.assertEqual(blanked_at_import("none"), 1)
+        for source in ("merchant_rule", "source_mapped", "transaction_type", "user_manual"):
+            self.assertEqual(blanked_at_import(source), 0)
 
 
 if __name__ == "__main__":

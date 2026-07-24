@@ -158,6 +158,15 @@ def init_db(conn: sqlite3.Connection) -> None:
                                      'merchant_rule', 'source_mapped', 'transaction_type',
                                      'user_manual', 'none'
                                  )),
+            -- 1 iff the rules left this row uncategorized at import (category_source
+            -- 'none'). Set ONCE by the importer and never written again — not by the
+            -- Uncategorized tab, not by corrections. It is the permanent record that
+            -- the rules had no opinion, so the "left blank" rate stays computable
+            -- after the blank is filled in and category_source is overwritten. The
+            -- live category_id IS NULL count answers "still blank"; this answers
+            -- "was blank at import". (Locked read-only by tests/test_review.py.)
+            uncategorized_at_import INTEGER NOT NULL DEFAULT 0
+                                 CHECK (uncategorized_at_import IN (0, 1)),
             review_status        TEXT NOT NULL DEFAULT 'unreviewed'
                                  CHECK (review_status IN ('unreviewed', 'reviewed')),
             duplicate_status     TEXT NOT NULL DEFAULT 'unique'
