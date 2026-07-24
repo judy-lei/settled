@@ -158,6 +158,15 @@ def init_db(conn: sqlite3.Connection) -> None:
                                      'merchant_rule', 'source_mapped', 'transaction_type',
                                      'user_manual', 'none'
                                  )),
+            -- 1 iff the rules left this row uncategorized at import (category_source
+            -- 'none'). Set ONCE by the importer and never written again — not by the
+            -- Uncategorized tab, not by corrections. It is the permanent record that
+            -- the rules had no opinion, so the "left blank" rate stays computable
+            -- after the blank is filled in and category_source is overwritten. The
+            -- live category_id IS NULL count answers "still blank"; this answers
+            -- "was blank at import". (Locked read-only by tests/test_review.py.)
+            uncategorized_at_import INTEGER NOT NULL DEFAULT 0
+                                 CHECK (uncategorized_at_import IN (0, 1)),
             review_status        TEXT NOT NULL DEFAULT 'unreviewed'
                                  CHECK (review_status IN ('unreviewed', 'reviewed')),
             duplicate_status     TEXT NOT NULL DEFAULT 'unique'
@@ -181,6 +190,27 @@ def init_db(conn: sqlite3.Connection) -> None:
                         CHECK (source IN ('seed', 'user_correction')),
             created_at  TEXT NOT NULL
         );
+
+        -- Append-only trail of category corrections made in the review flow.
+        -- One row per correction; a transaction corrected twice gets two rows
+        -- (no UNIQUE). old_category_source captures what the transaction's
+        -- category_source WAS at correction time, because apply_correction()
+        -- overwrites it to 'user_manual' — so the miscategorization-rate
+        -- denominator (how many rows the rules/source-map auto-categorized)
+        -- stays reconstructable after the correction lands.
+        CREATE TABLE IF NOT EXISTS category_changes (
+            id                  INTEGER PRIMARY KEY,
+            transaction_id      INTEGER NOT NULL REFERENCES transactions(id),
+            old_category_id     INTEGER NOT NULL REFERENCES categories(id),
+            new_category_id     INTEGER NOT NULL REFERENCES categories(id),
+            old_category_source TEXT NOT NULL CHECK (old_category_source IN (
+                                    'merchant_rule', 'source_mapped', 'user_manual'
+                                )),
+            changed_at          TEXT NOT NULL,
+            CHECK (old_category_id != new_category_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_catchg_txn ON category_changes(transaction_id);
     """)
     conn.commit()
 

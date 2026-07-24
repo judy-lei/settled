@@ -14,6 +14,17 @@ anything not answerable from the database.
 transcript logs live on the user's own machine. The security invariants below
 are scoped to that model.
 
+**Data flow.** The agent calls the hosted Claude API. Tool *results* — real
+transaction data (merchants, amounts, categories) read from the local database
+— are sent to the API as part of the model's context on the turns that use
+them. What never leaves the machine: the statement files, all parsing, the
+database itself, and the transcript logs. The boundary the local-install model
+guarantees is **no bank or aggregator access** — the agent never signs into an
+account or pulls from a third party — not "no household data reaches any
+model." (The extraction eval boundary is separate and stricter: statement
+*parsing* uses redacted samples in development and runs on real files only
+locally; see EVAL_SPEC.md.)
+
 ---
 
 ## Design invariants (non-negotiable)

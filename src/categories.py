@@ -149,3 +149,13 @@ def categorize(merchant_normalized: str, rules: list, source_category: str = Non
         return {"category": source_category, "category_source": "source_mapped"}
 
     return {"category": None, "category_source": "none"}
+
+
+def blanked_at_import(category_source: str) -> int:
+    """Durable "the rules left this row blank at import" marker, 1 or 0.
+
+    Keyed on category_source 'none' (categorize() had no opinion) — the single
+    source of truth for this rule, called by the importer at write time and
+    mirrored by the fixture builder, so the two can never drift.
+    """
+    return 1 if category_source == "none" else 0
