@@ -108,7 +108,12 @@ def get_review_metrics(conn, period: str) -> dict:
                                by later filling-in; this is the rule-quality metric
       blanked_by_rules_rate    blanked_by_rules / total, or 'n/a'
       reviewed                 qualifying rows marked reviewed
-      confirmed                reviewed with no correction (reviewed - corrected)
+      confirmed                reviewed, no correction, auto-categorized at import
+                               (uncategorized_at_import = 0) — the user agreed with
+                               the auto-guess
+      assigned                 reviewed, no correction, blank at import
+                               (uncategorized_at_import = 1) — the user filled a
+                               blank; distinct from confirming a guess
       corrected                distinct qualifying rows with >=1 correction
       miscategorization_rate   auto-categorized rows later corrected /
                                all rows auto-categorized (still-auto + corrected),
@@ -143,6 +148,24 @@ def get_review_metrics(conn, period: str) -> dict:
         JOIN category_changes cc ON cc.transaction_id = t.id
         WHERE {q}
     """, p).fetchone()[0]
+    # Direct-query confirmed/assigned — more robust than reviewed - corrected because
+    # it does not lean on the unenforced invariant "every corrected row is reviewed."
+    # Also separates confirmed-the-guess (uncategorized_at_import=0, auto row kept)
+    # from assigned (uncategorized_at_import=1, blank filled in by user) — the two
+    # have different fixes and should not be lumped together.
+    _no_change = "NOT EXISTS (SELECT 1 FROM category_changes cc WHERE cc.transaction_id = t.id)"
+    confirmed = conn.execute(
+        f"SELECT COUNT(*) FROM transactions t WHERE {q} "
+        f"AND t.review_status = 'reviewed' AND t.uncategorized_at_import = 0 "
+        f"AND {_no_change}",
+        p,
+    ).fetchone()[0]
+    assigned = conn.execute(
+        f"SELECT COUNT(*) FROM transactions t WHERE {q} "
+        f"AND t.review_status = 'reviewed' AND t.uncategorized_at_import = 1 "
+        f"AND {_no_change}",
+        p,
+    ).fetchone()[0]
 
     def still_auto(source: str) -> int:
         """Rows still carrying an auto category_source (not yet corrected)."""
@@ -184,7 +207,8 @@ def get_review_metrics(conn, period: str) -> dict:
         "blanked_by_rules": blanked_by_rules,
         "blanked_by_rules_rate": _rate(blanked_by_rules, total),
         "reviewed": reviewed,
-        "confirmed": reviewed - corrected,
+        "confirmed": confirmed,
+        "assigned": assigned,
         "corrected": corrected,
         "miscategorization_rate": _rate(total_errors, total_denom),
         "miscategorization_by_source": by_source,

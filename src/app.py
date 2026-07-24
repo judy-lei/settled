@@ -8,6 +8,8 @@ Run: .venv/bin/streamlit run src/app.py
 import html
 import streamlit as st
 from schema import get_conn, add_merchant_rule, seed_category_splits
+from review import assign_blank, confirm_reviewed, apply_correction
+from report import get_review_metrics, _SPEND_PREDICATE
 
 st.set_page_config(page_title="Household Spend Review", layout="centered")
 
@@ -138,23 +140,15 @@ def categorize_tab(conn):
     if st.button(f"Apply All ({n_pending} pending)", disabled=(n_pending == 0), type="primary"):
         for merchant, entry in pending.items():
             cat_name = entry["category"]
-            # Ensure category exists (handles names added via "+ Add new category…")
+            # Ensure category exists (handles names added via "+ Add new category…").
+            # seed_category_splits commits, so assign_blank reads a committed category.
             conn.execute(
                 "INSERT OR IGNORE INTO categories (name, type) VALUES (?, 'spend')",
                 (cat_name,)
             )
             seed_category_splits(conn)
-            cat_id = conn.execute(
-                "SELECT id FROM categories WHERE name = ?", (cat_name,)
-            ).fetchone()["id"]
-            conn.executemany("""
-                UPDATE transactions
-                SET category_id = ?, category_source = 'user_manual',
-                    review_status = 'reviewed'
-                WHERE id = ?
-            """, [(cat_id, tid) for tid in entry["ids"]])
+            assign_blank(conn, entry["ids"], cat_name, commit=False)
             add_merchant_rule(conn, merchant, cat_name)
-        conn.commit()
         st.session_state["pending_categories"] = {}
         st.rerun()
 
@@ -315,17 +309,137 @@ def duplicates_tab(conn):
                         st.rerun()
 
 
+def review_tab(conn):
+    st.subheader("Review — categorized spend")
+
+    months = [r[0] for r in conn.execute(f"""
+        SELECT DISTINCT substr(t.transaction_date, 1, 7) as month
+        FROM transactions t
+        WHERE {_SPEND_PREDICATE}
+          AND t.category_id IS NOT NULL
+        ORDER BY month DESC
+    """).fetchall()]
+
+    if not months:
+        st.info("No categorized transactions to review.")
+        return
+
+    period = st.selectbox("Month", months, key="review_period")
+
+    m = get_review_metrics(conn, period)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Transactions", m["total"])
+    c2.metric("Reviewed", f"{m['reviewed']} / {m['total']}")
+    c3.metric("Corrected", m["corrected"])
+    mr = m["miscategorization_rate"]
+    c4.metric("Miscat rate", f"{mr:.0%}" if isinstance(mr, float) else mr)
+
+    if m["blanked_by_rules"] > 0:
+        blr = m["blanked_by_rules_rate"]
+        rate_str = f"{blr:.0%}" if isinstance(blr, float) else blr
+        st.caption(
+            f"Rules left {m['blanked_by_rules']} transaction(s) blank at import ({rate_str})"
+        )
+
+    if m["total"] == 0:
+        st.info("No qualifying transactions for this month.")
+        return
+
+    st.divider()
+
+    rows = conn.execute(f"""
+        SELECT t.id, t.merchant_normalized, t.transaction_date, t.amount, t.direction,
+               t.review_status, c.name as category_name,
+               (SELECT c2.name
+                FROM category_changes cc
+                JOIN categories c2 ON c2.id = cc.old_category_id
+                WHERE cc.transaction_id = t.id
+                ORDER BY cc.id ASC LIMIT 1) as was_category
+        FROM transactions t
+        JOIN categories c ON c.id = t.category_id
+        WHERE {_SPEND_PREDICATE}
+          AND t.category_id IS NOT NULL
+          AND substr(t.transaction_date, 1, 7) = :period
+        ORDER BY c.name, t.transaction_date
+    """, {"period": period}).fetchall()
+
+    if not rows:
+        st.info("No categorized transactions for this month.")
+        return
+
+    by_cat: dict = {}
+    for r in rows:
+        by_cat.setdefault(r["category_name"], []).append(r)
+
+    cats = get_categories(conn)
+
+    for cat_name, txns in by_cat.items():
+        n_reviewed = sum(1 for t in txns if t["review_status"] == "reviewed")
+        all_done = n_reviewed == len(txns)
+
+        with st.expander(
+            f"**{cat_name}** — {len(txns)} txn(s), {n_reviewed}/{len(txns)} reviewed",
+            expanded=not all_done,
+        ):
+            for t in txns:
+                tid = t["id"]
+                signed = -t["amount"] if t["direction"] == "credit" else t["amount"]
+                was_html = (
+                    f'&emsp;<span class="merchant-meta">was: {html.escape(t["was_category"])}</span>'
+                    if t["was_category"] else ""
+                )
+                status_badge = (
+                    '<span style="color:#5EEAD4;margin-right:6px">✓</span>'
+                    if t["review_status"] == "reviewed" else
+                    '<span style="color:#A8B4C8;margin-right:6px">·</span>'
+                )
+
+                with st.container(border=True):
+                    info_col, action_col = st.columns([5, 3])
+                    info_col.markdown(
+                        f'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
+                        f'{status_badge}'
+                        f'<span class="merchant-meta">{t["transaction_date"]}</span>'
+                        f'&emsp;<span class="merchant-name">{html.escape(t["merchant_normalized"])}</span>'
+                        f'&emsp;<span class="merchant-amount">${signed:.2f}</span>'
+                        f'{was_html}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    b1, b2, b3 = action_col.columns([1, 3, 1])
+                    if b1.button("✓", key=f"ok_{tid}", help="Looks right — mark reviewed"):
+                        confirm_reviewed(conn, [tid])
+                        st.rerun()
+
+                    new_cat = b2.selectbox(
+                        "Change to",
+                        [""] + [c for c in cats if c != cat_name],
+                        key=f"chg_{tid}",
+                        label_visibility="collapsed",
+                        format_func=lambda x: "Change to…" if x == "" else x,
+                    )
+                    if b3.button("→", key=f"go_{tid}", disabled=not new_cat,
+                                 help=f"Apply change" if new_cat else "Select a category first"):
+                        apply_correction(conn, [tid], new_cat)
+                        st.session_state.pop(f"chg_{tid}", None)
+                        st.rerun()
+
+
 def main():
     inject_style()
     conn = get_conn()  # fresh connection per script run — Streamlit can rerun on a
                         # different thread, and SQLite connections are thread-bound
     st.title("Household Spend — Review")
 
-    tab1, tab2 = st.tabs(["Uncategorized", "Suspected duplicates"])
+    tab1, tab2, tab3 = st.tabs(["Uncategorized", "Suspected duplicates", "Review"])
     with tab1:
         categorize_tab(conn)
     with tab2:
         duplicates_tab(conn)
+    with tab3:
+        review_tab(conn)
 
 
 if __name__ == "__main__":

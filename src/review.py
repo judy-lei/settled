@@ -31,6 +31,37 @@ def _category_id(conn, category_name: str) -> int:
     return row["id"]
 
 
+def assign_blank(conn, txn_ids: list[int], category_name: str, commit: bool = True) -> int:
+    """Assign a category to blank (uncategorized) transactions.
+
+    The Uncategorized tab's write path. Sets category_id, category_source,
+    and review_status. Does NOT touch uncategorized_at_import — that marker
+    must stay 1 so blanked_by_rules remains correct after a blank is filled.
+    Merchant-rule upsert is the caller's responsibility (caller holds the
+    merchant key and may upsert after all ids for that merchant are assigned).
+
+    An already-categorized row is skipped (not an assignment — use
+    apply_correction for a category change). Returns the number of rows updated.
+
+    commit=False lets the caller batch this UPDATE with a subsequent
+    add_merchant_rule() so both commit atomically on that function's conn.commit().
+    """
+    if not txn_ids:
+        return 0
+    cat_id = _category_id(conn, category_name)
+    ids = [int(tid) for tid in txn_ids]
+    placeholders = ",".join("?" * len(ids))
+    cur = conn.execute(
+        f"UPDATE transactions SET category_id = ?, category_source = 'user_manual', "
+        f"review_status = 'reviewed' "
+        f"WHERE id IN ({placeholders}) AND category_id IS NULL",
+        [cat_id] + ids,
+    )
+    if commit:
+        conn.commit()
+    return cur.rowcount
+
+
 def confirm_reviewed(conn, txn_ids: list[int]) -> int:
     """Mark transactions reviewed without changing their category. No trail row.
 
