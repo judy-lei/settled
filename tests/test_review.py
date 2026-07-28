@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import schema
 from schema import init_db
 from categories import blanked_at_import
-from review import apply_correction, confirm_reviewed
+from review import apply_correction, assign_blank, confirm_reviewed
 from report import get_review_metrics
 
 PERIOD = "2026-05"
@@ -79,17 +79,6 @@ def _insert_txn(conn, tid, *, category_id, source, merchant="MERCH",
           amount, direction, ttype, category_id, source, blank, review, dup))
     conn.commit()
 
-
-def _assign_blank(conn, tid, category_name):
-    """Replicate what the Uncategorized tab does on Apply (app.py): set the
-    category, mark reviewed, flip source to user_manual. Deliberately does NOT
-    touch uncategorized_at_import — that's the behavior under test."""
-    cat_id = conn.execute(
-        "SELECT id FROM categories WHERE name = ?", (category_name,)).fetchone()["id"]
-    conn.execute(
-        "UPDATE transactions SET category_id = ?, category_source = 'user_manual', "
-        "review_status = 'reviewed' WHERE id = ?", (cat_id, tid))
-    conn.commit()
 
 
 def _changes(conn, tid=None):
@@ -238,6 +227,27 @@ class TestMetrics(_RedirectsSeedConfig):
         self.assertEqual(m["total"], 3)
         self.assertEqual(m["uncategorized"], 2)
         self.assertEqual(m["uncategorized_rate"], round(2 / 3, 4))
+        self.assertEqual(m["categorized"], 1)  # total - uncategorized (reviewable set)
+
+    def test_categorized_count_tracks_filling_blanks(self):
+        # The review screen header shows `categorized` (the reviewable set the tab
+        # lists), not `total`, so "Reviewed X / Y" is reachable when a month has
+        # blanks. This is the divergence case (categorized < total) that the
+        # header fix targets. Verify categorized == total - uncategorized and that
+        # it rises as blanks get filled while total stays fixed.
+        _insert_txn(self.conn, 1, category_id=1, source="merchant_rule")       # reviewable
+        _insert_txn(self.conn, 2, category_id=None, source="none", blank=1)    # blank
+        _insert_txn(self.conn, 3, category_id=None, source="none", blank=1)    # blank
+        before = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(before["total"], 3)
+        self.assertEqual(before["uncategorized"], 2)
+        self.assertEqual(before["categorized"], 1)   # only txn 1 shows on the review tab
+
+        assign_blank(self.conn, [2], "Groceries")    # fill one blank
+        after = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(after["total"], 3)          # total unchanged
+        self.assertEqual(after["uncategorized"], 1)  # one blank remains
+        self.assertEqual(after["categorized"], 2)    # reviewable set grew by one
 
     def test_payments_and_dupes_excluded_from_total(self):
         _insert_txn(self.conn, 1, category_id=1, source="merchant_rule")
@@ -255,7 +265,22 @@ class TestMetrics(_RedirectsSeedConfig):
         m = get_review_metrics(self.conn, PERIOD)
         self.assertEqual(m["reviewed"], 3)
         self.assertEqual(m["corrected"], 1)
-        self.assertEqual(m["confirmed"], 2)
+        self.assertEqual(m["confirmed"], 2)   # auto rows kept
+        self.assertEqual(m["assigned"], 0)    # no blanks filled in this test
+
+    def test_confirmed_vs_assigned_split(self):
+        # confirmed = auto-categorized + kept; assigned = blank at import + filled in.
+        # Both end up reviewed with no correction row — they must count separately
+        # because they signal different things (guess quality vs rule coverage).
+        _insert_txn(self.conn, 1, category_id=1, source="merchant_rule", blank=0)
+        _insert_txn(self.conn, 2, category_id=None, source="none", blank=1)
+        confirm_reviewed(self.conn, [1])
+        assign_blank(self.conn, [2], "Groceries")
+        m = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(m["reviewed"], 2)
+        self.assertEqual(m["confirmed"], 1)   # only the auto row
+        self.assertEqual(m["assigned"], 1)    # only the blank row
+        self.assertEqual(m["corrected"], 0)
 
     def test_miscat_denominator_survives_correction(self):
         # THE headline test. 4 rows auto-categorized by a merchant rule; correct
@@ -341,7 +366,7 @@ class TestBlankMarker(_RedirectsSeedConfig):
         self.assertEqual(before["blanked_by_rules"], 1)
         self.assertEqual(before["uncategorized"], 1)          # live: still blank
 
-        _assign_blank(self.conn, 1, "Shopping")
+        assign_blank(self.conn, [1], "Shopping")
 
         after = get_review_metrics(self.conn, PERIOD)
         self.assertEqual(_txn(self.conn, 1)["uncategorized_at_import"], 1)  # untouched
