@@ -227,6 +227,27 @@ class TestMetrics(_RedirectsSeedConfig):
         self.assertEqual(m["total"], 3)
         self.assertEqual(m["uncategorized"], 2)
         self.assertEqual(m["uncategorized_rate"], round(2 / 3, 4))
+        self.assertEqual(m["categorized"], 1)  # total - uncategorized (reviewable set)
+
+    def test_categorized_count_tracks_filling_blanks(self):
+        # The review screen header shows `categorized` (the reviewable set the tab
+        # lists), not `total`, so "Reviewed X / Y" is reachable when a month has
+        # blanks. This is the divergence case (categorized < total) that the
+        # header fix targets. Verify categorized == total - uncategorized and that
+        # it rises as blanks get filled while total stays fixed.
+        _insert_txn(self.conn, 1, category_id=1, source="merchant_rule")       # reviewable
+        _insert_txn(self.conn, 2, category_id=None, source="none", blank=1)    # blank
+        _insert_txn(self.conn, 3, category_id=None, source="none", blank=1)    # blank
+        before = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(before["total"], 3)
+        self.assertEqual(before["uncategorized"], 2)
+        self.assertEqual(before["categorized"], 1)   # only txn 1 shows on the review tab
+
+        assign_blank(self.conn, [2], "Groceries")    # fill one blank
+        after = get_review_metrics(self.conn, PERIOD)
+        self.assertEqual(after["total"], 3)          # total unchanged
+        self.assertEqual(after["uncategorized"], 1)  # one blank remains
+        self.assertEqual(after["categorized"], 2)    # reviewable set grew by one
 
     def test_payments_and_dupes_excluded_from_total(self):
         _insert_txn(self.conn, 1, category_id=1, source="merchant_rule")

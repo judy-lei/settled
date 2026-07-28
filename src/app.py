@@ -9,7 +9,7 @@ import html
 import streamlit as st
 from schema import get_conn, add_merchant_rule, seed_category_splits
 from review import assign_blank, confirm_reviewed, apply_correction
-from report import get_review_metrics, _SPEND_PREDICATE
+from report import get_review_metrics, SPEND_PREDICATE
 
 st.set_page_config(page_title="Household Spend Review", layout="centered")
 
@@ -315,7 +315,7 @@ def review_tab(conn):
     months = [r[0] for r in conn.execute(f"""
         SELECT DISTINCT substr(t.transaction_date, 1, 7) as month
         FROM transactions t
-        WHERE {_SPEND_PREDICATE}
+        WHERE {SPEND_PREDICATE}
           AND t.category_id IS NOT NULL
         ORDER BY month DESC
     """).fetchall()]
@@ -328,23 +328,31 @@ def review_tab(conn):
 
     m = get_review_metrics(conn, period)
 
+    # The list below shows only categorized rows; still-blank rows live on the
+    # Uncategorized tab and can't be reviewed here. get_review_metrics defines the
+    # categorized (reviewable) count so "Reviewed X / Y" is reachable and matches
+    # the rows shown; the blanks are pointed at separately below.
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Transactions", m["total"])
-    c2.metric("Reviewed", f"{m['reviewed']} / {m['total']}")
+    c1.metric("Transactions", m["categorized"])
+    c2.metric("Reviewed", f"{m['reviewed']} / {m['categorized']}")
     c3.metric("Corrected", m["corrected"])
     mr = m["miscategorization_rate"]
     c4.metric("Miscat rate", f"{mr:.0%}" if isinstance(mr, float) else mr)
 
-    if m["blanked_by_rules"] > 0:
+    if m["uncategorized"] > 0:
+        st.caption(
+            f"{m['uncategorized']} transaction(s) still uncategorized this month — "
+            f"categorize them on the Uncategorized tab"
+        )
+    # Durable rule-quality metric. Suppress it only when it would exactly restate
+    # the line above (fresh month, nothing filled yet → blanked_by_rules ==
+    # uncategorized); once any blank is filled the two diverge and both inform.
+    if m["blanked_by_rules"] > 0 and m["blanked_by_rules"] != m["uncategorized"]:
         blr = m["blanked_by_rules_rate"]
         rate_str = f"{blr:.0%}" if isinstance(blr, float) else blr
         st.caption(
             f"Rules left {m['blanked_by_rules']} transaction(s) blank at import ({rate_str})"
         )
-
-    if m["total"] == 0:
-        st.info("No qualifying transactions for this month.")
-        return
 
     st.divider()
 
@@ -358,7 +366,7 @@ def review_tab(conn):
                 ORDER BY cc.id ASC LIMIT 1) as was_category
         FROM transactions t
         JOIN categories c ON c.id = t.category_id
-        WHERE {_SPEND_PREDICATE}
+        WHERE {SPEND_PREDICATE}
           AND t.category_id IS NOT NULL
           AND substr(t.transaction_date, 1, 7) = :period
         ORDER BY c.name, t.transaction_date
@@ -421,7 +429,7 @@ def review_tab(conn):
                         format_func=lambda x: "Change to…" if x == "" else x,
                     )
                     if b3.button("→", key=f"go_{tid}", disabled=not new_cat,
-                                 help=f"Apply change" if new_cat else "Select a category first"):
+                                 help="Apply change" if new_cat else "Select a category first"):
                         apply_correction(conn, [tid], new_cat)
                         st.session_state.pop(f"chg_{tid}", None)
                         st.rerun()

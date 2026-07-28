@@ -14,14 +14,15 @@ SIGNED_AMOUNT = "CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount E
 # no confirmed duplicates. No JOIN to categories — NULL-category (uncategorized)
 # rows are spend and belong in totals. Use LEFT JOIN + COALESCE in by-category
 # queries so they appear as 'Uncategorized' rather than being silently dropped.
-# The spend-qualifying predicate, defined once. _SPEND_WHERE prefixes WHERE for
-# the report queries; get_review_metrics reuses the bare predicate so the review
-# metrics can never drift from what the report counts as spend (the CR-1 class).
-_SPEND_PREDICATE = """
+# The spend-qualifying predicate, defined once and shared. _SPEND_WHERE prefixes
+# WHERE for the report queries; get_review_metrics and the review tab reuse the
+# bare public SPEND_PREDICATE so nothing can drift from what the report counts as
+# spend (the CR-1 class). Public because app.py's review queries depend on it.
+SPEND_PREDICATE = """
     t.transaction_type NOT IN ('payment', 'transfer')
       AND t.duplicate_status != 'confirmed_duplicate'
 """
-_SPEND_WHERE = f"WHERE {_SPEND_PREDICATE}"
+_SPEND_WHERE = f"WHERE {SPEND_PREDICATE}"
 
 
 # extra_where contract (all three functions below): a TRUSTED LITERAL SQL
@@ -103,6 +104,9 @@ def get_review_metrics(conn, period: str) -> dict:
       uncategorized            qualifying rows STILL blank (NULL category) — work
                                remaining; drops to 0 as blanks get filled in
       uncategorized_rate       uncategorized / total, or 'n/a'
+      categorized              qualifying rows WITH a category (total - uncategorized)
+                               — the reviewable set the review screen lists; defined
+                               here so no read site re-derives it
       blanked_by_rules         qualifying rows the rules left blank AT IMPORT
                                (uncategorized_at_import = 1) — durable, unaffected
                                by later filling-in; this is the rule-quality metric
@@ -128,7 +132,7 @@ def get_review_metrics(conn, period: str) -> dict:
     category_changes.old_category_source — which is why that column is captured
     before apply_correction() overwrites category_source to 'user_manual'.
     """
-    q = f"{_SPEND_PREDICATE} AND substr(t.transaction_date, 1, 7) = :period"
+    q = f"{SPEND_PREDICATE} AND substr(t.transaction_date, 1, 7) = :period"
     p = {"period": period}
 
     total = conn.execute(
@@ -204,6 +208,7 @@ def get_review_metrics(conn, period: str) -> dict:
         "total": total,
         "uncategorized": uncategorized,
         "uncategorized_rate": _rate(uncategorized, total),
+        "categorized": total - uncategorized,
         "blanked_by_rules": blanked_by_rules,
         "blanked_by_rules_rate": _rate(blanked_by_rules, total),
         "reviewed": reviewed,
