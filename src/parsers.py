@@ -109,7 +109,10 @@ def parse_ws_visa(filepath: Path) -> pd.DataFrame:
 
     raw_amount = pd.to_numeric(df["amount"].str.strip(), errors="coerce")
     out["amount"] = raw_amount.abs()
-    out["direction"] = raw_amount.apply(lambda x: "credit" if x < 0 else "debit")
+    # WS Visa's sign convention is inverted from Amex: purchases are negative,
+    # refunds/payments positive. `direction` follows the accounting sense
+    # SIGNED_AMOUNT reads (debit = spend, credit = return), not the raw sign.
+    out["direction"] = raw_amount.apply(lambda x: "debit" if x < 0 else "credit")
     out["currency"] = df["currency"].str.strip()
 
     raw_types = df["transaction_type"].str.strip().str.lower()
