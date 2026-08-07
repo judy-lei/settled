@@ -14,6 +14,7 @@ data/
 .claude/commands/
 CLAUDE.local.md
 notes/
+BACKLOG.md
 
 # One-time migration scripts (local-state-specific, already ran)
 src/migrate_v2.py
