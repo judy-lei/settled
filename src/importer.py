@@ -115,6 +115,7 @@ def import_file(conn, filename: str, account_id: int, owner_id: int, rules: list
 
 def trust_test(conn, filename: str, import_file_id: int) -> None:
     if filename not in STATEMENT_TOTALS:
+        print(f"  Trust test [{filename}]: SKIPPED — no statement_total registered in seed_config")
         return
     statement_total = STATEMENT_TOTALS[filename]
     placeholders = ", ".join("?" * len(SETTLEMENT_EXCLUDED_TYPES))

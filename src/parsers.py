@@ -5,6 +5,11 @@ One parser per source format. Each returns a DataFrame with this common shape:
     amount (always positive), currency, direction (debit|credit),
     transaction_type, source_category_mapped (or None)
 
+`direction` is the accounting semantic downstream SIGNED_AMOUNT reads:
+`debit` = money left the account (spend), `credit` = money entered (refund,
+payment). Parsers whose source CSVs use inverted sign conventions MUST invert
+on the way in — the source's raw sign is not the truth here.
+
 Raw source fields are preserved in merchant_raw alongside the normalized
 version — nothing is discarded before normalization, so every transformation
 stays auditable against the original.
