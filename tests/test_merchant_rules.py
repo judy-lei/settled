@@ -14,16 +14,15 @@ Run:  .venv/bin/python -m unittest discover tests/ -v
 """
 
 import json
-import shutil
 import sqlite3
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import schema
+from helpers import RedirectsSeedConfig
 from schema import (add_merchant_rule, export_user_corrections, init_db,
                     seed_merchant_rules, seed_user_corrections)
 
@@ -53,26 +52,14 @@ def _rule(conn, pattern):
     return (row["category"], row["source"]) if row else None
 
 
-class _RedirectsSeedConfig(unittest.TestCase):
-    """Shared fixture: redirects schema.SEED_CONFIG_PATH to a temp file so the
-    real household config (data/seed_config.json) is never touched by a test."""
-
-    def setUp(self):
-        self._tmpdir = tempfile.mkdtemp()
-        self._cfg_path = Path(self._tmpdir) / "seed_config.json"
-        self._cfg_path.write_text(json.dumps({"user_corrections": []}))
-        self._orig_path = schema.SEED_CONFIG_PATH
-        schema.SEED_CONFIG_PATH = self._cfg_path
-
-    def tearDown(self):
-        schema.SEED_CONFIG_PATH = self._orig_path
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
+class _CorrectionsConfigCase(RedirectsSeedConfig):
+    """Adds `_corrections_in_config` helper for merchant-rule roundtrip tests."""
 
     def _corrections_in_config(self):
         return json.loads(self._cfg_path.read_text())["user_corrections"]
 
 
-class TestUserCorrectionRoundTrip(_RedirectsSeedConfig):
+class TestUserCorrectionRoundTrip(_CorrectionsConfigCase):
     """A correction made in the live DB must reappear, intact, in a DB rebuilt
     from config alone — the whole point of DATA-1."""
 
@@ -148,7 +135,7 @@ class TestUserCorrectionRoundTrip(_RedirectsSeedConfig):
         self.assertIsNone(_rule(conn2, "NETFLIX"))
 
 
-class TestMalformedConfigRobustness(_RedirectsSeedConfig):
+class TestMalformedConfigRobustness(_CorrectionsConfigCase):
     """DATA-1 code-review finding #3: a hand-edited seed_config.json with a
     malformed user_corrections entry (wrong arity) must skip that row with a
     warning, not crash the importer — same pattern already used for unknown

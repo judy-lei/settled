@@ -19,17 +19,15 @@ merchant-rule write.
 Run:  .venv/bin/python -m unittest discover tests/ -v
 """
 
-import json
-import shutil
 import sqlite3
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import schema
+from helpers import RedirectsSeedConfig
 from schema import init_db
 from categories import blanked_at_import
 from review import apply_correction, assign_blank, confirm_reviewed
@@ -94,25 +92,16 @@ def _txn(conn, tid):
     return conn.execute("SELECT * FROM transactions WHERE id = ?", (tid,)).fetchone()
 
 
-class _RedirectsSeedConfig(unittest.TestCase):
-    """apply_correction upserts a merchant rule, which persists to seed_config.
-    Redirect it to a temp file so the real household config is never touched."""
+class _ReviewTestCase(RedirectsSeedConfig):
+    """Adds the shared review-test DB fixture on top of the config redirect."""
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp()
-        cfg = Path(self._tmpdir) / "seed_config.json"
-        cfg.write_text(json.dumps({"user_corrections": []}))
-        self._orig_path = schema.SEED_CONFIG_PATH
-        schema.SEED_CONFIG_PATH = cfg
+        super().setUp()
         self.conn = _setup_db()
-
-    def tearDown(self):
-        schema.SEED_CONFIG_PATH = self._orig_path
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
-        self.conn.close()
+        self.addCleanup(self.conn.close)
 
 
-class TestWritePath(_RedirectsSeedConfig):
+class TestWritePath(_ReviewTestCase):
 
     def test_confirm_inserts_no_change_row(self):
         _insert_txn(self.conn, 1, category_id=1, source="merchant_rule")
@@ -203,7 +192,7 @@ class TestWritePath(_RedirectsSeedConfig):
         self.assertEqual(_txn(self.conn, 1)["review_status"], "unreviewed")
 
 
-class TestCheckConstraint(_RedirectsSeedConfig):
+class TestCheckConstraint(_ReviewTestCase):
 
     def test_check_rejects_old_equals_new(self):
         # Schema-level guard: a trail row where nothing changed is meaningless.
@@ -216,7 +205,7 @@ class TestCheckConstraint(_RedirectsSeedConfig):
                 " VALUES (1, 1, 1, 'merchant_rule', '2026-05-15T00:00:00Z')")
 
 
-class TestMetrics(_RedirectsSeedConfig):
+class TestMetrics(_ReviewTestCase):
     """All change rows are produced by apply_correction, never hand-inserted."""
 
     def test_uncategorized_rate(self):
@@ -346,7 +335,7 @@ class TestMetrics(_RedirectsSeedConfig):
         self.assertEqual(m["miscategorization_rate"], "n/a")
 
 
-class TestBlankMarker(_RedirectsSeedConfig):
+class TestBlankMarker(_ReviewTestCase):
     """uncategorized_at_import — the durable 'rules left this blank' record.
 
     The whole point is that it survives the blank being filled in, so the

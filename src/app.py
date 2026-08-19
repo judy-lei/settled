@@ -7,6 +7,7 @@ Run: .venv/bin/streamlit run src/app.py
 
 import html
 import streamlit as st
+from display import format_account
 from schema import get_conn, add_merchant_rule, seed_category_splits
 from review import assign_blank, confirm_reviewed, apply_correction
 from report import get_review_metrics, SPEND_PREDICATE
@@ -241,8 +242,15 @@ def duplicates_tab(conn):
 
     rows = conn.execute("""
         SELECT t.id, t.transaction_date, t.amount, t.merchant_normalized,
-               t.duplicate_of_id, a.institution, a.account_name
-        FROM transactions t JOIN accounts a ON t.account_id = a.id
+               t.duplicate_of_id, u.display_name AS owner_name,
+               a.institution, a.account_name,
+               o.transaction_date AS orig_transaction_date,
+               o.amount           AS orig_amount,
+               o.merchant_normalized AS orig_merchant_normalized
+        FROM transactions t
+        JOIN accounts a ON t.account_id = a.id
+        JOIN users u ON a.owner_id = u.id
+        LEFT JOIN transactions o ON o.id = t.duplicate_of_id
         WHERE t.duplicate_status = 'suspected_duplicate'
         ORDER BY t.merchant_normalized, t.transaction_date
     """).fetchall()
@@ -271,26 +279,24 @@ def duplicates_tab(conn):
                 st.rerun()
 
         for r in group:
-            orig = conn.execute(
-                "SELECT transaction_date, amount, merchant_normalized FROM transactions WHERE id = ?",
-                (r["duplicate_of_id"],)
-            ).fetchone()
-
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 2, 1])
                 with c1:
                     st.markdown("**Original**")
-                    if orig is None:
+                    if r["orig_transaction_date"] is None:
                         st.warning("Original transaction not found.")
                     else:
-                        st.write(f"${orig['amount']:.2f}")
-                        st.markdown(f"<span class='merchant-meta'>{orig['transaction_date']}</span>",
-                                    unsafe_allow_html=True)
+                        st.write(f"${r['orig_amount']:.2f}")
+                        st.markdown(
+                            f"<span class='merchant-meta'>{r['orig_transaction_date']}</span>",
+                            unsafe_allow_html=True,
+                        )
                 with c2:
                     st.markdown("**Suspected duplicate**")
                     st.write(f"${r['amount']:.2f}")
                     st.markdown(f"<span class='merchant-meta'>{r['transaction_date']} · "
-                                f"{r['institution']} {r['account_name']}</span>", unsafe_allow_html=True)
+                                f"{format_account(r)}</span>",
+                                unsafe_allow_html=True)
                 with c3:
                     if st.button("Confirm", key=f"confirm_{r['id']}"):
                         conn.execute("""

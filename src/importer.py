@@ -5,10 +5,10 @@ seed_config.example.json), skips files already imported (by content hash),
 categorizes via categories.py, and loads into the schema.
 
 Registry format in seed_config.json ("import_files" key):
-    { "filename": "statement.csv",       # lives in data/
-      "account_key": "Amex:Cobalt",      # "{institution}:{account_name}"
-      "source_format": "amex_monthly",   # a parser from parsers.PARSERS
-      "statement_total": 1234.56 }       # optional — enables the trust test
+    { "filename": "statement.csv",              # lives in data/
+      "account_key": "Person A:Amex:Cobalt",    # "{owner_name}:{institution}:{account_name}"
+      "source_format": "amex_monthly",          # a parser from parsers.PARSERS
+      "statement_total": 1234.56 }              # optional — enables the trust test
 
 Run: .venv/bin/python src/importer.py
 """
@@ -144,9 +144,7 @@ def main():
 
     print("Importing known sources...\n")
     for filename, (account_key, _fmt) in KNOWN_SOURCES.items():
-        account_id = accounts[account_key]
-        owner_row = conn.execute("SELECT owner_id FROM accounts WHERE id = ?", (account_id,)).fetchone()
-        owner_id = owner_row["owner_id"]
+        account_id, owner_id = accounts[account_key]
 
         result = import_file(conn, filename, account_id, owner_id, rules)
         print(f"  {result['status']:<28} {filename}"

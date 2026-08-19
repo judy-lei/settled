@@ -9,8 +9,8 @@
     { "owner_name": "Person A", "institution": "Wealthsimple", "account_name": "Chequing", "account_type": "chequing" }
   ],
   "import_files": [
-    { "filename": "my-amex-statement.csv", "account_key": "Amex:Cobalt", "source_format": "amex_monthly", "statement_total": 1234.56 },
-    { "filename": "my-visa-export.csv", "account_key": "Wealthsimple:Visa", "source_format": "ws_visa" }
+    { "filename": "my-amex-statement.csv", "account_key": "Person A:Amex:Cobalt", "source_format": "amex_monthly", "statement_total": 1234.56 },
+    { "filename": "my-visa-export.csv", "account_key": "Person A:Wealthsimple:Visa", "source_format": "ws_visa" }
   ],
   "merchant_rules": [
     ["NETFLIX", "Subscriptions"],

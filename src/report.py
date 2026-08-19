@@ -6,6 +6,7 @@ Run: .venv/bin/python src/report.py            (all years)
 """
 
 import argparse
+from display import format_account
 from schema import get_conn
 
 SIGNED_AMOUNT = "CASE WHEN t.direction = 'credit' THEN -t.amount ELSE t.amount END"
@@ -286,12 +287,16 @@ def report(year: int = None):
     # Imported files summary
     print("\n--- Imported files (all years) ---")
     rows = conn.execute("""
-        SELECT f.source_filename, f.row_count, a.institution, a.account_name
-        FROM import_files f JOIN accounts a ON f.account_id = a.id
+        SELECT f.source_filename, f.row_count, u.display_name AS owner_name,
+               a.institution, a.account_name
+        FROM import_files f
+        JOIN accounts a ON f.account_id = a.id
+        JOIN users u ON a.owner_id = u.id
         ORDER BY f.imported_at
     """).fetchall()
     for r in rows:
-        print(f"  {r['source_filename']:<35} {r['row_count']:>4} rows   {r['institution']} {r['account_name']}")
+        print(f"  {r['source_filename']:<35} {r['row_count']:>4} rows   "
+              f"{format_account(r)}")
 
     conn.close()
 
