@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "spend.db"
+DB_PATH = Path(os.environ.get("SPEND_DB_PATH", Path(__file__).parent.parent / "data" / "spend.db"))
 SEED_CONFIG_PATH = Path(__file__).parent.parent / "data" / "seed_config.json"
 SEED_CONFIG_EXAMPLE = Path(__file__).parent.parent / "seed_config.example.json"
 
