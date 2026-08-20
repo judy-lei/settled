@@ -20,7 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from schema import compute_settlement, get_settlement_data, init_db
+from schema import (compute_settlement, get_settlement_data, init_db,
+                    settlement_checks)
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +487,71 @@ class TestSettlementArithmeticSQL(unittest.TestCase):
             sum(u["balance"] for u in result["users"]), 0.0, places=2,
             msg="Odd-cent split broke books-balance beyond the accepted 1-cent tolerance",
         )
+
+
+class TestSettlementView(unittest.TestCase):
+    """Locks the settlement SCREEN's contract (Slice 1) via the real functions:
+    the values it renders, the reconciliation checks it displays, and the
+    settled-period path — the branch that previously crashed on a None settlement."""
+
+    def test_render_values_and_checks_pass(self):
+        # Alice(1) paid $300 groceries; Bob(2) paid $100 groceries; split 50/50.
+        # One $40 row is uncategorized (category NULL) → excluded from spend.
+        # categorized total = $400; fair share each = $200.
+        # balance Alice = +$100, Bob = -$100 → Bob owes Alice $100.
+        conn = _setup_db()
+        _insert_txn(conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=300.0, direction="debit", txn_type="purchase")
+        _insert_txn(conn, txn_id=2, owner_id=2, account_id=2,
+                    amount=100.0, direction="debit", txn_type="purchase")
+        _insert_txn(conn, txn_id=3, owner_id=1, account_id=1,
+                    amount=40.0, direction="debit", txn_type="purchase",
+                    category_id=None)
+        result = compute_settlement(get_settlement_data(conn, "2026-06"))
+
+        s = result["settlement"]
+        self.assertEqual(s["from_user"]["display_name"], "Bob")
+        self.assertEqual(s["to_user"]["display_name"], "Alice")
+        self.assertAlmostEqual(s["amount"], 100.0)
+        # the $40 NULL-category row is excluded and surfaced as the caveat count
+        self.assertEqual(result["uncategorized_count"], 1)
+        self.assertAlmostEqual(result["total_spend"], 400.0)
+
+        # every reconciliation check the screen renders must pass
+        checks = settlement_checks(result)
+        self.assertTrue(all(ok for _, ok in checks), msg=str(checks))
+
+    def test_checks_flag_inconsistency(self):
+        # Paid totals ($250) DON'T equal categorized spend ($200): the screen
+        # must show FAIL on that check, not a false 'pass'. The other two hold,
+        # so this isolates the paid-total check (negative test of the real fn).
+        inconsistent = {
+            "total_spend": 200.0,
+            "users": [
+                {"id": 1, "display_name": "A", "paid": 150.0,
+                 "fair_share": 100.0, "balance": 0.0},
+                {"id": 2, "display_name": "B", "paid": 100.0,
+                 "fair_share": 100.0, "balance": 0.0},
+            ],
+        }
+        checks = dict(settlement_checks(inconsistent))
+        self.assertFalse(checks["Paid totals = categorized spend"])  # 250 != 200
+        self.assertTrue(checks["Fair shares = categorized spend"])   # 200 == 200
+        self.assertTrue(checks["Balances cancel to zero"])           # 0 + 0 == 0
+
+    def test_settled_period_has_no_settlement(self):
+        # Both paid exactly their fair share → square. compute_settlement returns
+        # settlement=None; the view's "Settled — nobody owes anyone" branch
+        # depends on this (it would crash if it did s["amount"] on None).
+        conn = _setup_db()
+        _insert_txn(conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=100.0, direction="debit", txn_type="purchase")
+        _insert_txn(conn, txn_id=2, owner_id=2, account_id=2,
+                    amount=100.0, direction="debit", txn_type="purchase")
+        result = compute_settlement(get_settlement_data(conn, "2026-06"))
+
+        self.assertIsNone(result["settlement"])
+        self.assertTrue(all(ok for _, ok in settlement_checks(result)))
 
 
 if __name__ == "__main__":

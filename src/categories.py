@@ -25,9 +25,10 @@ See DECISIONS.md for why source-category-mapping was added.
 """
 
 import json
+import os
 from pathlib import Path
 
-_SEED_CONFIG_PATH = Path(__file__).parent.parent / "data" / "seed_config.json"
+_SEED_CONFIG_PATH = Path(os.environ.get("SPEND_SEED_CONFIG", Path(__file__).parent.parent / "data" / "seed_config.json"))
 
 
 def _load_seed_rules() -> list:

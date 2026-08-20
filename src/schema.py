@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(os.environ.get("SPEND_DB_PATH", Path(__file__).parent.parent / "data" / "spend.db"))
-SEED_CONFIG_PATH = Path(__file__).parent.parent / "data" / "seed_config.json"
+SEED_CONFIG_PATH = Path(os.environ.get("SPEND_SEED_CONFIG", Path(__file__).parent.parent / "data" / "seed_config.json"))
 SEED_CONFIG_EXAMPLE = Path(__file__).parent.parent / "seed_config.example.json"
 
 SETTLEMENT_EXCLUDED_TYPES = ("payment", "transfer")
@@ -471,6 +471,23 @@ def compute_settlement(data: dict) -> dict:
         }
     )
     return {**data, "users": users, "settlement": settlement}
+
+
+def settlement_checks(result: dict) -> list[tuple[str, bool]]:
+    """Consistency checks the settlement view displays — derived from a
+    compute_settlement() result, no new arithmetic. Each is an invariant that
+    must hold when the books balance: paid totals and fair shares both sum to
+    categorized spend, and balances cancel to zero. Returns (label, ok) pairs."""
+    users = result["users"]
+    total = result["total_spend"]
+    paid_sum = round(sum(u["paid"] for u in users), 2)
+    share_sum = round(sum(u["fair_share"] for u in users), 2)
+    bal_sum = round(sum(u["balance"] for u in users), 2)
+    return [
+        ("Paid totals = categorized spend", paid_sum == total),
+        ("Fair shares = categorized spend", share_sum == total),
+        ("Balances cancel to zero", bal_sum == 0),
+    ]
 
 
 def add_merchant_rule(conn: sqlite3.Connection, pattern: str, category_name: str) -> None:

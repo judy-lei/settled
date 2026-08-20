@@ -10,7 +10,7 @@ import streamlit as st
 from display import format_account
 from schema import (
     get_conn, add_merchant_rule, seed_category_splits,
-    get_settlement_data, compute_settlement,
+    get_settlement_data, compute_settlement, settlement_checks,
 )
 from review import assign_blank, confirm_reviewed, apply_correction
 from report import get_review_metrics, SPEND_PREDICATE
@@ -512,8 +512,9 @@ def settlement_tab(conn, period):
     s = result["settlement"]
     users = result["users"]
 
-    # Hero — who owes whom
-    if s["amount"] == 0:
+    # Hero — who owes whom. settlement is None when the period is square
+    # (nobody owes anyone) or has no qualifying spend.
+    if s is None:
         st.markdown(
             '<div style="text-align:center;padding:28px 0 8px">'
             '<div class="section-label">Settlement</div>'
@@ -579,15 +580,8 @@ def settlement_tab(conn, period):
         )
 
     # Reconciliation checks — consistency of the tool's own output (not new math)
-    paid_sum = round(sum(u["paid"] for u in users), 2)
-    share_sum = round(sum(u["fair_share"] for u in users), 2)
-    bal_sum = round(sum(u["balance"] for u in users), 2)
     total = result["total_spend"]
-    checks = [
-        ("Paid totals = categorized spend", paid_sum == total),
-        ("Fair shares = categorized spend", share_sum == total),
-        ("Balances cancel to zero", bal_sum == 0),
-    ]
+    checks = settlement_checks(result)
     rows = "".join(
         f'<div style="display:flex;justify-content:space-between;font-size:0.8rem;'
         f'color:var(--text-muted);padding:3px 0">'
