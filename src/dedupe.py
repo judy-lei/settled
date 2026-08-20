@@ -10,6 +10,7 @@ export would be a real duplicate worth catching).
 Run: .venv/bin/python src/dedupe.py
 """
 
+from display import format_account
 from schema import get_conn
 
 
@@ -53,8 +54,11 @@ def flag_duplicates(conn) -> int:
 def report_suspected(conn) -> None:
     rows = conn.execute("""
         SELECT t.id, t.transaction_date, t.amount, t.merchant_normalized,
-               t.duplicate_of_id, a.institution, a.account_name
-        FROM transactions t JOIN accounts a ON t.account_id = a.id
+               t.duplicate_of_id, u.display_name AS owner_name,
+               a.institution, a.account_name
+        FROM transactions t
+        JOIN accounts a ON t.account_id = a.id
+        JOIN users u ON a.owner_id = u.id
         WHERE t.duplicate_status = 'suspected_duplicate'
         ORDER BY t.transaction_date
     """).fetchall()
@@ -65,11 +69,8 @@ def report_suspected(conn) -> None:
 
     print(f"\n{len(rows)} suspected duplicate(s) — review before confirming:\n")
     for r in rows:
-        orig = conn.execute(
-            "SELECT account_id FROM transactions WHERE id = ?", (r["duplicate_of_id"],)
-        ).fetchone()
         print(f"  id={r['id']:<5} ${r['amount']:>8.2f}  {r['transaction_date']}  "
-              f"{r['merchant_normalized']:<30} ({r['institution']} {r['account_name']})"
+              f"{r['merchant_normalized']:<30} ({format_account(r)})"
               f"  duplicate_of=id {r['duplicate_of_id']}")
 
 

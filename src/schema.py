@@ -226,8 +226,17 @@ def seed_users(conn: sqlite3.Connection) -> dict[str, int]:
     return {r["display_name"]: r["id"] for r in conn.execute("SELECT id, display_name FROM users")}
 
 
-def seed_accounts(conn: sqlite3.Connection, users: dict[str, int]) -> dict[str, int]:
-    """Insert accounts from seed_config. Returns {institution:account_name: id}."""
+def seed_accounts(
+    conn: sqlite3.Connection, users: dict[str, int]
+) -> dict[str, tuple[int, int]]:
+    """Insert accounts from seed_config. Returns
+    {owner_name:institution:account_name: (account_id, owner_id)}.
+
+    Owner is part of the key so two users can hold accounts with the same
+    (institution, account_name) pair without the lookup collapsing. LEFT JOIN
+    surfaces any orphan account (missing user row) as a loud failure rather
+    than silently omitting it.
+    """
     config = load_seed_config()
     conn.executemany("""
         INSERT OR IGNORE INTO accounts (owner_id, institution, account_name, account_type)
@@ -237,10 +246,23 @@ def seed_accounts(conn: sqlite3.Connection, users: dict[str, int]) -> dict[str, 
         for a in config["accounts"]
     ])
     conn.commit()
-    return {
-        f"{r['institution']}:{r['account_name']}": r["id"]
-        for r in conn.execute("SELECT id, institution, account_name FROM accounts")
-    }
+
+    result: dict[str, tuple[int, int]] = {}
+    for r in conn.execute(
+        "SELECT a.id AS account_id, a.owner_id, u.display_name, "
+        "a.institution, a.account_name "
+        "FROM accounts a LEFT JOIN users u ON u.id = a.owner_id"
+    ):
+        if r["display_name"] is None:
+            raise RuntimeError(
+                f"Account id={r['account_id']} "
+                f"({r['institution']}:{r['account_name']}) has "
+                f"owner_id={r['owner_id']} but no matching users row. "
+                "DB is inconsistent — investigate before importing."
+            )
+        key = f"{r['display_name']}:{r['institution']}:{r['account_name']}"
+        result[key] = (r["account_id"], r["owner_id"])
+    return result
 
 
 def seed_categories(conn: sqlite3.Connection) -> dict[str, int]:
