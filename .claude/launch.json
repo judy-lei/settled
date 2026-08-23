@@ -6,12 +6,6 @@
       "runtimeExecutable": ".venv/bin/streamlit",
       "runtimeArgs": ["run", "src/app.py", "--server.headless", "true", "--server.port", "8502"],
       "port": 8502
-    },
-    {
-      "name": "review-ui-demo",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "SPEND_DB_PATH=data/demo/demo.db SPEND_SEED_CONFIG=data/demo/seed_config.json exec .venv/bin/streamlit run src/app.py --server.headless true --server.port 8503"],
-      "port": 8503
     }
   ]
 }
