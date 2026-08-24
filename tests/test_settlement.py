@@ -521,6 +521,56 @@ class TestSettlementView(unittest.TestCase):
         checks = settlement_checks(result)
         self.assertTrue(all(ok for _, ok in checks), msg=str(checks))
 
+    def test_checks_tolerate_odd_cent_double_rounding(self):
+        # $484.11 split 50/50: each user's fair_share rounds to $242.06
+        # (242.055 rounds away from zero), summing to $484.12 — a real 1-cent
+        # gap from total_spend ($484.11) that arises purely from rounding each
+        # user's share independently, not from any actual inconsistency. The
+        # checks must tolerate this (not flag a false FAIL on correct data).
+        conn = _setup_db()
+        _insert_txn(conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=484.11, direction="debit", txn_type="purchase")
+        result = compute_settlement(get_settlement_data(conn, "2026-06"))
+
+        self.assertAlmostEqual(result["total_spend"], 484.11)
+        checks = dict(settlement_checks(result))
+        self.assertTrue(checks["Fair shares = categorized spend"], msg=checks)
+        self.assertTrue(checks["Balances cancel to zero"], msg=checks)
+
+    def test_checks_reject_two_cent_fair_share_gap(self):
+        # The tolerance must stay narrow: a real 2-cent fair_share mismatch
+        # (bigger than any legitimate per-user rounding gap) still fails —
+        # this is the boundary the 1-cent tolerance must not swallow.
+        gapped = {
+            "total_spend": 400.0,
+            "users": [
+                {"id": 1, "display_name": "A", "paid": 200.0,
+                 "fair_share": 198.99, "balance": 1.01},
+                {"id": 2, "display_name": "B", "paid": 200.0,
+                 "fair_share": 199.0, "balance": 1.0},
+            ],
+        }
+        checks = dict(settlement_checks(gapped))
+        # 198.99 + 199.0 = 397.99, a 2.01-cent gap from 400.0 — real, not rounding noise
+        self.assertFalse(checks["Fair shares = categorized spend"], msg=checks)
+
+    def test_checks_reject_one_cent_paid_mismatch(self):
+        # paid has no legitimate source of rounding noise (no percentage math,
+        # just a sum of cent-exact amounts) — it keeps exact equality, not the
+        # tolerance given to fair_share/balance. A real 1-cent paid mismatch
+        # (e.g. a dropped transaction) must still fail loudly.
+        mismatched = {
+            "total_spend": 400.0,
+            "users": [
+                {"id": 1, "display_name": "A", "paid": 200.01,
+                 "fair_share": 200.0, "balance": 0.01},
+                {"id": 2, "display_name": "B", "paid": 199.98,
+                 "fair_share": 200.0, "balance": -0.02},
+            ],
+        }
+        checks = dict(settlement_checks(mismatched))
+        self.assertFalse(checks["Paid totals = categorized spend"], msg=checks)
+
     def test_checks_flag_inconsistency(self):
         # Paid totals ($250) DON'T equal categorized spend ($200): the screen
         # must show FAIL on that check, not a false 'pass'. The other two hold,

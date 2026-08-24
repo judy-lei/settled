@@ -477,7 +477,22 @@ def settlement_checks(result: dict) -> list[tuple[str, bool]]:
     """Consistency checks the settlement view displays — derived from a
     compute_settlement() result, no new arithmetic. Each is an invariant that
     must hold when the books balance: paid totals and fair shares both sum to
-    categorized spend, and balances cancel to zero. Returns (label, ok) pairs."""
+    categorized spend, and balances cancel to zero. Returns (label, ok) pairs.
+
+    fair_share and balance are compared with a 1-cent tolerance, not exact
+    equality: fair_share is rounded per-user in SQL from a percentage split
+    before being summed here, so it can legitimately differ from total_spend
+    by a cent on correct data (e.g. an odd-cent amount split 50/50), and
+    balance (paid - fair_share) inherits that same noise. This is a stopgap —
+    P0-2's residual-cent-to-debtor policy will make shares sum to total_spend
+    exactly, at which point this tolerance never triggers.
+
+    paid is NOT given the same tolerance: it's a straight sum of cent-exact
+    transaction amounts grouped by owner, no percentage math involved, so it
+    has no legitimate source of rounding noise and should equal total_spend
+    exactly. Loosening it too would hide a real 1-cent discrepancy (e.g. a
+    dropped or duplicated transaction)."""
+    TOLERANCE = 0.01
     users = result["users"]
     total = result["total_spend"]
     paid_sum = round(sum(u["paid"] for u in users), 2)
@@ -485,8 +500,8 @@ def settlement_checks(result: dict) -> list[tuple[str, bool]]:
     bal_sum = round(sum(u["balance"] for u in users), 2)
     return [
         ("Paid totals = categorized spend", paid_sum == total),
-        ("Fair shares = categorized spend", share_sum == total),
-        ("Balances cancel to zero", bal_sum == 0),
+        ("Fair shares = categorized spend", abs(share_sum - total) <= TOLERANCE),
+        ("Balances cancel to zero", abs(bal_sum) <= TOLERANCE),
     ]
 
 

@@ -176,7 +176,7 @@ def categorize_tab(conn, period):
     """, {"period": period}).fetchall()
 
     if not rows:
-        st.success("Nothing uncategorized.")
+        st.success(f"Nothing uncategorized in {period}.")
         return
 
     total_txns = sum(r["txns"] for r in rows)
@@ -311,7 +311,7 @@ def duplicates_tab(conn, period):
     """, {"period": period}).fetchall()
 
     if not rows:
-        st.success("No suspected duplicates.")
+        st.success(f"No suspected duplicates in {period}.")
         return
 
     st.caption(f"{len(rows)} suspected duplicate(s) — flagged conservatively, never auto-resolved")
@@ -613,6 +613,18 @@ def main():
         st.info("No transactions imported yet.")
         return
     period = st.selectbox("Period", periods, index=0, key="global_period")
+
+    # Clear per-merchant categorize state when the period changes, so a pending
+    # correction set in one month can't be applied in another and the "N pending"
+    # counter stays accurate. The categorize widgets are keyed by merchant, not by
+    # period, so their state would otherwise carry across a switch.
+    if st.session_state.get("_active_period") != period:
+        st.session_state["_active_period"] = period
+        st.session_state["pending_categories"] = {}
+        stale = [k for k in st.session_state
+                 if k.startswith(("cat_", "new_cat_", "sel_"))]
+        for k in stale:
+            del st.session_state[k]
 
     tab1, tab2, tab3, tab4 = st.tabs(
         ["Uncategorized", "Suspected duplicates", "Review", "Settlement"]
