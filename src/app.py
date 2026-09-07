@@ -1,6 +1,7 @@
 """
-Review UI — categorize uncategorized transactions (bulk, by merchant),
-resolve suspected duplicates (side-by-side compare).
+Review UI — one month picker drives four tabs: categorize uncategorized
+transactions (bulk, by merchant), resolve suspected duplicates (side-by-side
+compare), review categorized spend, and view the month's settlement.
 
 Run: .venv/bin/streamlit run src/app.py
 """
@@ -8,7 +9,10 @@ Run: .venv/bin/streamlit run src/app.py
 import html
 import streamlit as st
 from display import format_account
-from schema import get_conn, add_merchant_rule, seed_category_splits
+from schema import (
+    get_conn, add_merchant_rule, seed_category_splits,
+    get_settlement_data, compute_settlement, settlement_checks,
+)
 from review import assign_blank, confirm_reviewed, apply_correction
 from report import get_review_metrics, SPEND_PREDICATE
 
@@ -34,24 +38,63 @@ def get_categories(conn) -> list[str]:
 def inject_style():
     st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=JetBrains+Mono:wght@500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap');
+
+    :root {
+        --bg-deep: #140f1c;
+        --bg-mid: #1e1730;
+        --bg-surface: rgba(255,255,255,.045);
+        --accent: #E8AE60;
+        --accent-dim: rgba(232,174,96,.14);
+        --accent-border: rgba(232,174,96,.30);
+        --text-primary: #EDE5DA;
+        --text-secondary: #a099b8;
+        --text-muted: #7a6e8a;
+        --text-label: #4a4060;
+        --border: rgba(255,255,255,.06);
+    }
 
     .stApp {
-        background: linear-gradient(180deg, #05070d 0%, #0A0F1C 35%, #0f1b2e 100%);
+        background: linear-gradient(160deg, var(--bg-deep) 0%, var(--bg-mid) 100%);
+        background-attachment: fixed;
     }
 
-    h1 {
-        font-family: 'Playfair Display', Georgia, serif !important;
-        font-weight: 700 !important;
-        letter-spacing: -0.01em;
+    html, body, [class*="css"], .stMarkdown, p, span, div, label {
+        font-family: 'Source Sans 3', system-ui, sans-serif;
     }
+
+    h1, h2, h3 {
+        font-family: 'Playfair Display', Georgia, serif !important;
+        font-weight: 600 !important;
+        letter-spacing: -0.01em;
+        color: var(--text-primary) !important;
+    }
+    h1 { font-weight: 700 !important; }
+
+    /* Active tab in accent + amber underline */
+    .stTabs [data-baseweb="tab-list"] { gap: 28px; border-bottom: 1px solid var(--border); }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Source Sans 3', sans-serif;
+        letter-spacing: 0.02em;
+    }
+    .stTabs [aria-selected="true"] { color: var(--accent) !important; }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: var(--accent) !important; }
 
     .stButton button {
-        font-family: 'JetBrains Mono', monospace;
+        font-family: 'Source Sans 3', sans-serif;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
-        font-size: 0.75rem;
-        border-radius: 8px;
+        letter-spacing: 0.10em;
+        font-size: 0.70rem;
+        font-weight: 600;
+        border-radius: 12px;
+        border: 1px solid var(--accent-border);
+        background: var(--accent-dim);
+        color: var(--accent);
+    }
+    .stButton button:hover {
+        border-color: var(--accent);
+        background: rgba(232,174,96,.20);
+        color: var(--accent);
     }
 
     [data-testid="stHorizontalBlock"] [data-testid="stColumn"] {
@@ -59,12 +102,14 @@ def inject_style():
         align-items: center;
     }
 
+    /* Cards: warm surface, soft glow, no hard border */
     [data-testid="stVerticalBlockBorderWrapper"] {
-        background: rgba(20, 30, 51, 0.55);
-        border: 1px solid rgba(94, 234, 212, 0.18);
-        border-left: 3px solid rgba(94, 234, 212, 0.6);
-        border-radius: 14px;
-        margin-bottom: 0.75rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        box-shadow: 0 4px 24px rgba(0,0,0,.30);
+        margin-bottom: 0.85rem;
+        padding: 2px;
     }
 
     [data-testid="stMarkdownContainer"] { width: 100%; }
@@ -85,19 +130,28 @@ def inject_style():
     [data-testid="stSelectbox"], [data-testid="stTextInput"] { max-width: 340px; }
     .merchant-name {
         font-size: 1.1rem;
-        font-weight: 700;
-        color: #F0F4FF;
+        font-weight: 600;
+        color: var(--text-primary);
         letter-spacing: 0.01em;
     }
     .merchant-amount {
         font-size: 1rem;
-        font-weight: 700;
-        color: #5EEAD4;
+        font-weight: 600;
+        color: var(--accent);
         font-family: 'JetBrains Mono', monospace;
     }
     .merchant-meta {
         font-size: 0.85rem;
-        color: #A8B4C8;
+        color: var(--text-muted);
+        font-family: 'JetBrains Mono', monospace;
+    }
+    /* Uppercase section labels */
+    .section-label {
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 0.68rem;
+        font-weight: 600;
+        color: var(--text-label);
     }
 
     /* Tighter page top; hide Streamlit chrome */
@@ -107,7 +161,7 @@ def inject_style():
     """, unsafe_allow_html=True)
 
 
-def categorize_tab(conn):
+def categorize_tab(conn, period):
     st.subheader("Uncategorized — grouped by merchant")
 
     rows = conn.execute("""
@@ -117,12 +171,13 @@ def categorize_tab(conn):
                GROUP_CONCAT(t.id) AS ids
         FROM transactions t
         WHERE t.category_id IS NULL
+          AND substr(t.transaction_date, 1, 7) = :period
         GROUP BY t.merchant_normalized
         ORDER BY ABS(total) DESC
-    """).fetchall()
+    """, {"period": period}).fetchall()
 
     if not rows:
-        st.success("Nothing uncategorized.")
+        st.success(f"Nothing uncategorized in {period}.")
         return
 
     total_txns = sum(r["txns"] for r in rows)
@@ -237,7 +292,7 @@ def categorize_tab(conn):
                 del pending[merchant]
 
 
-def duplicates_tab(conn):
+def duplicates_tab(conn, period):
     st.subheader("Suspected duplicates")
 
     rows = conn.execute("""
@@ -252,11 +307,12 @@ def duplicates_tab(conn):
         JOIN users u ON a.owner_id = u.id
         LEFT JOIN transactions o ON o.id = t.duplicate_of_id
         WHERE t.duplicate_status = 'suspected_duplicate'
+          AND substr(t.transaction_date, 1, 7) = :period
         ORDER BY t.merchant_normalized, t.transaction_date
-    """).fetchall()
+    """, {"period": period}).fetchall()
 
     if not rows:
-        st.success("No suspected duplicates.")
+        st.success(f"No suspected duplicates in {period}.")
         return
 
     st.caption(f"{len(rows)} suspected duplicate(s) — flagged conservatively, never auto-resolved")
@@ -315,22 +371,8 @@ def duplicates_tab(conn):
                         st.rerun()
 
 
-def review_tab(conn):
+def review_tab(conn, period):
     st.subheader("Review — categorized spend")
-
-    months = [r[0] for r in conn.execute(f"""
-        SELECT DISTINCT substr(t.transaction_date, 1, 7) as month
-        FROM transactions t
-        WHERE {SPEND_PREDICATE}
-          AND t.category_id IS NOT NULL
-        ORDER BY month DESC
-    """).fetchall()]
-
-    if not months:
-        st.info("No categorized transactions to review.")
-        return
-
-    period = st.selectbox("Month", months, key="review_period")
 
     m = get_review_metrics(conn, period)
 
@@ -441,19 +483,161 @@ def review_tab(conn):
                         st.rerun()
 
 
+_PERSON_GRADIENTS = [
+    ("#C17B2F", "#E8AE60"),  # Person A — warm amber
+    ("#6B5AAF", "#9B8BE0"),  # Person B — plum
+]
+
+
+def _avatar(name: str, idx: int) -> str:
+    start, end = _PERSON_GRADIENTS[idx % len(_PERSON_GRADIENTS)]
+    initial = html.escape(name[:1].upper())
+    return (
+        f'<span style="display:inline-flex;align-items:center;justify-content:center;'
+        f'width:26px;height:26px;border-radius:50%;font-size:0.8rem;font-weight:600;'
+        f'color:#140f1c;background:linear-gradient(135deg,{start},{end});'
+        f'margin-right:8px;vertical-align:middle">{initial}</span>'
+    )
+
+
+def settlement_tab(conn, period):
+    """Read-only settlement view. Renders get_settlement_data + compute_settlement —
+    the same deterministic tool the agent calls. No arithmetic in the view; no write
+    actions (mark-settled / lifecycle are future work, not shown here)."""
+    try:
+        result = compute_settlement(get_settlement_data(conn, period))
+    except ValueError as e:
+        st.error(f"Cannot settle {period}: {e}")
+        return
+
+    s = result["settlement"]
+    users = result["users"]
+
+    # Hero — who owes whom. settlement is None when the period is square
+    # (nobody owes anyone) or has no qualifying spend.
+    if s is None:
+        st.markdown(
+            '<div style="text-align:center;padding:28px 0 8px">'
+            '<div class="section-label">Settlement</div>'
+            '<div style="font-family:\'Playfair Display\',serif;font-size:1.6rem;'
+            'color:var(--text-primary);margin-top:10px">Settled — nobody owes anyone.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        frm = s["from_user"]["display_name"]
+        to = s["to_user"]["display_name"]
+        st.markdown(
+            f'<div style="text-align:center;padding:24px 0 4px">'
+            f'<div class="section-label">Settlement · {period}</div>'
+            f'<div style="font-family:\'Playfair Display\',serif;font-size:1.5rem;'
+            f'color:var(--text-secondary);margin-top:12px">'
+            f'{html.escape(frm)} owes {html.escape(to)}</div>'
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:3.4rem;'
+            f'font-weight:600;color:var(--accent);margin-top:6px">'
+            f'${s["amount"]:.2f}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Uncategorized caveat — loud, since it means the number is incomplete
+    unc = result.get("uncategorized_count", 0)
+    if unc:
+        st.markdown(
+            f'<div style="background:var(--accent-dim);border:1px solid var(--accent-border);'
+            f'border-radius:12px;padding:10px 14px;margin:10px 0;color:var(--text-primary);'
+            f'font-size:0.9rem">⚠ {unc} transaction(s) in {period} are uncategorized and '
+            f'<b>excluded</b> from this settlement — the number is not yet complete.</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Per-person breakdown
+    cols = st.columns(len(users))
+    for idx, (col, u) in enumerate(zip(cols, users)):
+        bal = u["balance"]
+        bal_color = "var(--accent)" if bal > 0 else "var(--text-secondary)"
+        bal_label = "is owed" if bal > 0 else ("owes" if bal < 0 else "settled")
+        col.markdown(
+            f'<div style="background:var(--bg-surface);border:1px solid var(--border);'
+            f'border-radius:20px;padding:16px 18px;box-shadow:0 4px 24px rgba(0,0,0,.30)">'
+            f'<div style="margin-bottom:10px">{_avatar(u["display_name"], idx)}'
+            f'<span style="font-weight:600;color:var(--text-primary)">'
+            f'{html.escape(u["display_name"])}</span></div>'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;'
+            f'color:var(--text-muted);margin:4px 0">'
+            f'<span>Paid</span><span style="font-family:\'JetBrains Mono\',monospace;'
+            f'color:var(--text-primary)">${u["paid"]:.2f}</span></div>'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;'
+            f'color:var(--text-muted);margin:4px 0">'
+            f'<span>Fair share</span><span style="font-family:\'JetBrains Mono\',monospace;'
+            f'color:var(--text-primary)">${u["fair_share"]:.2f}</span></div>'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;'
+            f'margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">'
+            f'<span style="color:var(--text-muted)">{bal_label}</span>'
+            f'<span style="font-family:\'JetBrains Mono\',monospace;color:{bal_color}">'
+            f'${abs(bal):.2f}</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Reconciliation checks — consistency of the tool's own output (not new math)
+    total = result["total_spend"]
+    checks = settlement_checks(result)
+    rows = "".join(
+        f'<div style="display:flex;justify-content:space-between;font-size:0.8rem;'
+        f'color:var(--text-muted);padding:3px 0">'
+        f'<span>{"✓" if ok else "✗"} {label}</span>'
+        f'<span style="font-family:\'JetBrains Mono\',monospace;'
+        f'color:{"var(--accent)" if ok else "#e07a7a"}">{"pass" if ok else "FAIL"}</span></div>'
+        for label, ok in checks
+    )
+    st.markdown(
+        f'<div style="margin-top:18px"><div class="section-label" '
+        f'style="margin-bottom:6px">Reconciliation · ${total:.2f} categorized spend'
+        f'</div>{rows}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     inject_style()
     conn = get_conn()  # fresh connection per script run — Streamlit can rerun on a
                         # different thread, and SQLite connections are thread-bound
     st.title("Household Spend — Review")
 
-    tab1, tab2, tab3 = st.tabs(["Uncategorized", "Suspected duplicates", "Review"])
+    # One period context for the whole app — every tab views the same month.
+    periods = [r[0] for r in conn.execute(
+        "SELECT DISTINCT substr(transaction_date, 1, 7) AS p "
+        "FROM transactions ORDER BY p DESC"
+    )]
+    if not periods:
+        st.info("No transactions imported yet.")
+        return
+    period = st.selectbox("Period", periods, index=0, key="global_period")
+
+    # Clear per-merchant categorize state when the period changes, so a pending
+    # correction set in one month can't be applied in another and the "N pending"
+    # counter stays accurate. The categorize widgets are keyed by merchant, not by
+    # period, so their state would otherwise carry across a switch.
+    if st.session_state.get("_active_period") != period:
+        st.session_state["_active_period"] = period
+        st.session_state["pending_categories"] = {}
+        stale = [k for k in st.session_state
+                 if k.startswith(("cat_", "new_cat_", "sel_"))]
+        for k in stale:
+            del st.session_state[k]
+
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["Uncategorized", "Suspected duplicates", "Review", "Settlement"]
+    )
     with tab1:
-        categorize_tab(conn)
+        categorize_tab(conn, period)
     with tab2:
-        duplicates_tab(conn)
+        duplicates_tab(conn, period)
     with tab3:
-        review_tab(conn)
+        review_tab(conn, period)
+    with tab4:
+        settlement_tab(conn, period)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from schema import compute_settlement, get_settlement_data, init_db
+from schema import (compute_settlement, get_settlement_data, init_db,
+                    settlement_checks)
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +487,124 @@ class TestSettlementArithmeticSQL(unittest.TestCase):
             sum(u["balance"] for u in result["users"]), 0.0, places=2,
             msg="Odd-cent split broke books-balance beyond the accepted 1-cent tolerance",
         )
+
+
+class TestSettlementView(unittest.TestCase):
+    """Locks the settlement SCREEN's contract (Slice 1) via the real functions:
+    the values it renders, the reconciliation checks it displays, and the
+    settled-period path — the branch that previously crashed on a None settlement."""
+
+    def test_render_values_and_checks_pass(self):
+        # Alice(1) paid $300 groceries; Bob(2) paid $100 groceries; split 50/50.
+        # One $40 row is uncategorized (category NULL) → excluded from spend.
+        # categorized total = $400; fair share each = $200.
+        # balance Alice = +$100, Bob = -$100 → Bob owes Alice $100.
+        conn = _setup_db()
+        _insert_txn(conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=300.0, direction="debit", txn_type="purchase")
+        _insert_txn(conn, txn_id=2, owner_id=2, account_id=2,
+                    amount=100.0, direction="debit", txn_type="purchase")
+        _insert_txn(conn, txn_id=3, owner_id=1, account_id=1,
+                    amount=40.0, direction="debit", txn_type="purchase",
+                    category_id=None)
+        result = compute_settlement(get_settlement_data(conn, "2026-06"))
+
+        s = result["settlement"]
+        self.assertEqual(s["from_user"]["display_name"], "Bob")
+        self.assertEqual(s["to_user"]["display_name"], "Alice")
+        self.assertAlmostEqual(s["amount"], 100.0)
+        # the $40 NULL-category row is excluded and surfaced as the caveat count
+        self.assertEqual(result["uncategorized_count"], 1)
+        self.assertAlmostEqual(result["total_spend"], 400.0)
+
+        # every reconciliation check the screen renders must pass
+        checks = settlement_checks(result)
+        self.assertTrue(all(ok for _, ok in checks), msg=str(checks))
+
+    def test_checks_tolerate_odd_cent_double_rounding(self):
+        # $484.11 split 50/50: each user's fair_share rounds to $242.06
+        # (242.055 rounds away from zero), summing to $484.12 — a real 1-cent
+        # gap from total_spend ($484.11) that arises purely from rounding each
+        # user's share independently, not from any actual inconsistency. The
+        # checks must tolerate this (not flag a false FAIL on correct data).
+        conn = _setup_db()
+        _insert_txn(conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=484.11, direction="debit", txn_type="purchase")
+        result = compute_settlement(get_settlement_data(conn, "2026-06"))
+
+        self.assertAlmostEqual(result["total_spend"], 484.11)
+        checks = dict(settlement_checks(result))
+        self.assertTrue(checks["Fair shares = categorized spend"], msg=checks)
+        self.assertTrue(checks["Balances cancel to zero"], msg=checks)
+
+    def test_checks_reject_two_cent_fair_share_gap(self):
+        # The tolerance must stay narrow: a 2-cent fair_share mismatch — one cent
+        # past the 1-cent rounding tolerance — must still fail. This pins the
+        # boundary: the check goes green here only while TOLERANCE < 0.02, so a
+        # regression widening the tolerance is caught. paid sums exact and
+        # balances cancel, so the fair_share check is the sole failure.
+        gapped = {
+            "total_spend": 400.0,
+            "users": [
+                {"id": 1, "display_name": "A", "paid": 200.0,
+                 "fair_share": 199.99, "balance": 0.0},
+                {"id": 2, "display_name": "B", "paid": 200.0,
+                 "fair_share": 199.99, "balance": 0.0},
+            ],
+        }
+        checks = dict(settlement_checks(gapped))
+        # 199.99 + 199.99 = 399.98, exactly 2 cents short of 400.00 — one cent
+        # beyond the tolerance, so it must be rejected as a real inconsistency.
+        self.assertFalse(checks["Fair shares = categorized spend"], msg=checks)
+
+    def test_checks_reject_one_cent_paid_mismatch(self):
+        # paid has no legitimate source of rounding noise (no percentage math,
+        # just a sum of cent-exact amounts) — it keeps exact equality, not the
+        # tolerance given to fair_share/balance. A real 1-cent paid mismatch
+        # (e.g. a dropped transaction) must still fail loudly.
+        mismatched = {
+            "total_spend": 400.0,
+            "users": [
+                {"id": 1, "display_name": "A", "paid": 200.01,
+                 "fair_share": 200.0, "balance": 0.01},
+                {"id": 2, "display_name": "B", "paid": 199.98,
+                 "fair_share": 200.0, "balance": -0.02},
+            ],
+        }
+        checks = dict(settlement_checks(mismatched))
+        self.assertFalse(checks["Paid totals = categorized spend"], msg=checks)
+
+    def test_checks_flag_inconsistency(self):
+        # Paid totals ($250) DON'T equal categorized spend ($200): the screen
+        # must show FAIL on that check, not a false 'pass'. The other two hold,
+        # so this isolates the paid-total check (negative test of the real fn).
+        inconsistent = {
+            "total_spend": 200.0,
+            "users": [
+                {"id": 1, "display_name": "A", "paid": 150.0,
+                 "fair_share": 100.0, "balance": 0.0},
+                {"id": 2, "display_name": "B", "paid": 100.0,
+                 "fair_share": 100.0, "balance": 0.0},
+            ],
+        }
+        checks = dict(settlement_checks(inconsistent))
+        self.assertFalse(checks["Paid totals = categorized spend"])  # 250 != 200
+        self.assertTrue(checks["Fair shares = categorized spend"])   # 200 == 200
+        self.assertTrue(checks["Balances cancel to zero"])           # 0 + 0 == 0
+
+    def test_settled_period_has_no_settlement(self):
+        # Both paid exactly their fair share → square. compute_settlement returns
+        # settlement=None; the view's "Settled — nobody owes anyone" branch
+        # depends on this (it would crash if it did s["amount"] on None).
+        conn = _setup_db()
+        _insert_txn(conn, txn_id=1, owner_id=1, account_id=1,
+                    amount=100.0, direction="debit", txn_type="purchase")
+        _insert_txn(conn, txn_id=2, owner_id=2, account_id=2,
+                    amount=100.0, direction="debit", txn_type="purchase")
+        result = compute_settlement(get_settlement_data(conn, "2026-06"))
+
+        self.assertIsNone(result["settlement"])
+        self.assertTrue(all(ok for _, ok in settlement_checks(result)))
 
 
 if __name__ == "__main__":
