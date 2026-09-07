@@ -1,6 +1,7 @@
 """
-Review UI — categorize uncategorized transactions (bulk, by merchant),
-resolve suspected duplicates (side-by-side compare).
+Review UI — one month picker drives four tabs: categorize uncategorized
+transactions (bulk, by merchant), resolve suspected duplicates (side-by-side
+compare), review categorized spend, and view the month's settlement.
 
 Run: .venv/bin/streamlit run src/app.py
 """
