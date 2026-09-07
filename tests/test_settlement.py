@@ -538,20 +538,23 @@ class TestSettlementView(unittest.TestCase):
         self.assertTrue(checks["Balances cancel to zero"], msg=checks)
 
     def test_checks_reject_two_cent_fair_share_gap(self):
-        # The tolerance must stay narrow: a real 2-cent fair_share mismatch
-        # (bigger than any legitimate per-user rounding gap) still fails —
-        # this is the boundary the 1-cent tolerance must not swallow.
+        # The tolerance must stay narrow: a 2-cent fair_share mismatch — one cent
+        # past the 1-cent rounding tolerance — must still fail. This pins the
+        # boundary: the check goes green here only while TOLERANCE < 0.02, so a
+        # regression widening the tolerance is caught. paid sums exact and
+        # balances cancel, so the fair_share check is the sole failure.
         gapped = {
             "total_spend": 400.0,
             "users": [
                 {"id": 1, "display_name": "A", "paid": 200.0,
-                 "fair_share": 198.99, "balance": 1.01},
+                 "fair_share": 199.99, "balance": 0.0},
                 {"id": 2, "display_name": "B", "paid": 200.0,
-                 "fair_share": 199.0, "balance": 1.0},
+                 "fair_share": 199.99, "balance": 0.0},
             ],
         }
         checks = dict(settlement_checks(gapped))
-        # 198.99 + 199.0 = 397.99, a 2.01-cent gap from 400.0 — real, not rounding noise
+        # 199.99 + 199.99 = 399.98, exactly 2 cents short of 400.00 — one cent
+        # beyond the tolerance, so it must be rejected as a real inconsistency.
         self.assertFalse(checks["Fair shares = categorized spend"], msg=checks)
 
     def test_checks_reject_one_cent_paid_mismatch(self):
